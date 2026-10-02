@@ -1,0 +1,31 @@
+# ── 依赖 ──────────────────────────────────────
+node_modules/
+vendor/
+
+# ── 构建产物 ──────────────────────────────────
+dist/
+dist-demo/
+.output/
+*.tsbuildinfo
+
+# ── 环境变量 ──────────────────────────────────
+# 仓库内只保留 .env.example；真实配置请本地复制生成
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.demo
+
+# ── 运行时与日志 ──────────────────────────────
+runtime/
+*.log
+logs/
+
+# ── 编辑器 / 系统 ─────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ── 上游模板遗留（体积大且与本项目无关）──────
+web/.github/assets/
