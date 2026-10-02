@@ -1,0 +1,10 @@
+minimumReleaseAge: 1440
+minimumReleaseAgeExcludePrune: true
+trustPolicy: no-downgrade
+autoInstallPeers: false
+shellEmulator: true
+
+allowBuilds:
+  maplibre-gl: true
+  simple-git-hooks: true
+  vue-demi: true
