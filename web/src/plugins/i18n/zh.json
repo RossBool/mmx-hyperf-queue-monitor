@@ -1,0 +1,15 @@
+{
+  "login": "登录",
+  "email": "邮箱",
+  "password": "密码",
+  "download": "下载",
+  "logout": "退出",
+  "forgotPassword": "忘记密码?",
+  "register": "注册",
+  "forgotPasswordPage": {
+    "continue": "下一步"
+  },
+  "homePage": {
+    "searchKeyWords": "搜索菜单"
+  }
+}

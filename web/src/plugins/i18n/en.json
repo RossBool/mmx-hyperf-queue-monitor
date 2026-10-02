@@ -1,0 +1,15 @@
+{
+  "login": "Login",
+  "email": "Email",
+  "password": "Password",
+  "download": "Download",
+  "logout": "Log out",
+  "forgotPassword": "Forgot password?",
+  "register": "Register",
+  "forgotPasswordPage": {
+    "continue": "continue"
+  },
+  "homePage": {
+    "searchKeyWords": "Search Menu"
+  }
+}
