@@ -1,0 +1,70 @@
+{
+    "name": "app/alarm-server",
+    "type": "project",
+    "description": "告警管理后端 (Hyperf v3.2 + MySQL 8.0)，实现 /api/alarm 19 个端点",
+    "keywords": ["php", "swoole", "hyperf", "alarm"],
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.2",
+        "ext-json": "*",
+        "ext-pdo": "*",
+        "ext-pdo_mysql": "*",
+        "ext-redis": "*",
+        "hyperf/cache": "^3.2",
+        "hyperf/command": "^3.2",
+        "hyperf/config": "^3.2",
+        "hyperf/contract": "^3.2",
+        "hyperf/database": "^3.2",
+        "hyperf/db-connection": "^3.2",
+        "hyperf/di": "^3.2",
+        "hyperf/engine": "^2.10",
+        "hyperf/exception-handler": "^3.2",
+        "hyperf/framework": "^3.2",
+        "hyperf/http-message": "^3.2",
+        "hyperf/http-server": "^3.2",
+        "hyperf/logger": "^3.2",
+        "hyperf/memory": "^3.2",
+        "hyperf/paginator": "^3.2",
+        "hyperf/process": "^3.2",
+        "hyperf/validation": "^3.2",
+        "psr/clock": "^1.0"
+    },
+    "require-dev": {
+        "hyperf/testing": "^3.2",
+        "mockery/mockery": "^1.0",
+        "phpstan/phpstan": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        },
+        "files": []
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "HyperfTest\\": "test/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true,
+        "allow-plugins": {
+            "php-http/discovery": true
+        }
+    },
+    "scripts": {
+        "post-root-package-install": [
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+        ],
+        "post-autoload-dump": [
+            "rm -rf runtime/container"
+        ],
+        "start": [
+            "Composer\\Config::disableProcessTimeout",
+            "php ./bin/hyperf.php start"
+        ],
+        "test": "co-phpunit --prepend test/bootstrap.php --colors=always"
+    }
+}
