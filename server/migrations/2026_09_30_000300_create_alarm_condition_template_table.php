@@ -13,8 +13,10 @@ declare(strict_types=1);
  * ⚠️ 绝不能把整份 schema.sql 塞进一次 statement()：Connection::statement() 走
  *    `getPdo()->prepare()`，PDO 预处理语句不接受分号分隔的多语句。
  *
- * 文件序号保证 alarm_policy 先于 alarm_policy_condition 建表（后者有 FK 指向前者）。
- * down() 由 migrate:rollback 按 batch **逆序**执行，子表先于父表 drop，不会触发外键检查。
+ * 幂等性：`up()` 用 `CREATE TABLE IF NOT EXISTS`，**重跑不会清空数据**。
+ * 文件序号保证 alarm_policy 先于 alarm_policy_condition 建表（后者有 FK 指向前者）；
+ * 此外 `up()`/`down()` 都被 `SET FOREIGN_KEY_CHECKS=0/1` 包裹并用 try/finally 恢复，
+ * 因此即使文件乱序执行、或上一轮迁移中途失败留下残留子表，也不会 errno 3730 卡死。
  */
 
 use Hyperf\Database\Migrations\Migration;
@@ -24,10 +26,20 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Db::statement('DROP TABLE IF EXISTS `alarm_condition_template`');
-        Db::statement(
+        // S-07：幂等且非破坏。原实现是 `DROP TABLE IF EXISTS` + `CREATE TABLE`，
+        // 重跑会**静默清空整表**（`alarm_history` 尤其致命，schema 自称「永不删除」）。
+        // 改为 IF NOT EXISTS：首次部署行为完全不变，重跑变成 no-op。
+        // ⚠️ 代价：表已存在但结构不符时会**静默跳过**，schema 漂移不可见。
+        //    改结构必须新建迁移文件，不要改这里。
+        // S-17：建表语句全部包在 try/finally 里。SET FOREIGN_KEY_CHECKS 是**会话级**开关，
+        // 建表抛异常时也必须在 finally 恢复，否则连接池把这条 session 交给
+        // 下一个请求时会带着外键检查关闭运行 —— 那是比本 bug 更隐蔽的故障。
+        // 有了它，父表先建/后建、上一轮迁移中途失败留残留子表，都不会再 errno 3730 卡死。
+        try {
+            Db::statement('SET FOREIGN_KEY_CHECKS = 0');
+            Db::statement(
             <<<'SQL'
-            CREATE TABLE `alarm_condition_template` (
+            CREATE TABLE IF NOT EXISTS `alarm_condition_template` (
               `id`           BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT COMMENT '模板 id',
               `name`         VARCHAR(64)      NOT NULL                COMMENT '模板名称，长度 1-64，全局唯一',
               `remark`       VARCHAR(500)     NOT NULL DEFAULT ''     COMMENT '备注，最长 500',
@@ -53,10 +65,20 @@ return new class extends Migration
               COMMENT='触发条件模板（conditions 为 JSON 数组；硬删除，被引用时返回 409）'
             SQL
         );
+        } finally {
+            // 无论建表成功还是抛异常，都必须恢复会话级开关。
+            Db::statement('SET FOREIGN_KEY_CHECKS = 1');
+        }
     }
 
-    public function down(): void
+        public function down(): void
     {
-        Db::statement('DROP TABLE IF EXISTS `alarm_condition_template`');
+        // 与 up() 对称：单步回滚父表时子表可能仍带 FK，包裹后不再 errno 3730。
+        try {
+            Db::statement('SET FOREIGN_KEY_CHECKS = 0');
+            Db::statement('DROP TABLE IF EXISTS `alarm_condition_template`');
+        } finally {
+            Db::statement('SET FOREIGN_KEY_CHECKS = 1');
+        }
     }
 };

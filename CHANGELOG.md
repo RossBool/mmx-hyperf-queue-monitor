@@ -15,6 +15,66 @@
 
 ---
 
+## 2026-10-03 · 五批修复 + 对抗式复核
+
+一轮**四线对抗式审查**（51 条原始发现去重为 44 条）之后，做了五批修复，
+随后又发起了**针对修复本身的对抗式复核**（54 个攻击/探针）。
+
+### 修复清单
+
+| 编号 | 问题 | 级别 |
+| --- | --- | --- |
+| S-01 | `insertConditions()` 把 camelCase 条件键直接写入 snake_case 表 → 全部落库失败 | 阻塞 |
+| S-02 | `computed(() => form.state.values)` 响应式依赖图为空 → 向导永远停在第 1 步 | 阻塞 |
+| S-03 | 5 个语义常量求值都是 409，被当数组键 → 5 条文案塌缩成 1 条 | 严重 |
+| S-04 | 启停接口缺 `status` 时静默停用线上策略并返回 200 | 严重 |
+| S-05 | 通知模板字典 `pageSize:100` 截断 → 字典外的 id 被判「不存在」，保存必失败 | 严重 |
+| S-07 | 6 个 `up()` 无条件 `DROP TABLE` → 重跑迁移静默清空整表 | 严重 |
+| S-08 | `schema.sql` 声明 `MySQL >= 8.0.13`，而 8.0.16 以下**只解析不执行 CHECK** → 29 条约束静默失效 | 严重 |
+| S-09 | `isDuplicateKey()` 把整个 SQLSTATE `23xxx` 当「重名」→ 外键失败被报成「策略名称已存在」 | 严重 |
+| S-10 | 鉴权中间件白名单为空时 fail-open → 漏配一个环境变量即全部接口无鉴权 | 严重 |
+| S-17 | 迁移不设 `FOREIGN_KEY_CHECKS` → 失败后 errno 3730 不可自愈 | 中等 |
+
+### 复核过程中发现并修掉的、**由修复本身引入**的问题
+
+这几条值得单独记，因为它们是「改完之后才发现」：
+
+- **本以为 fail-closed 是纯收益，结果它把服务锁死了。**
+  `composer.json` 缺 `hyperf/dotenv`、`config/bootstrap.php` 不存在 →
+  `env()` 没有数据源 → `ALARM_STATIC_TOKENS` 恒为空 → 配合新的 fail-closed
+  语义，**19 个端点永久 401，且 `ALARM_AUTH_DISABLED` 这个逃生舱同样读不到**。
+  修复前的 fail-open 在这个仓库里**恰好是能用的**（不安全但通）。
+- **`.env.example` 预填了可用的 `dev-token-1`**，而 `composer.json` 的
+  `post-root-package-install` 会自动 copy 成 `.env` → 白送公开凭据。
+- **S-04 改了行为却没有一条测试**：既有 5 处 `changeStatus` 全传 0/1，从没传过 `null`/``。
+- **S-10 改了全部 19 个端点的鉴权语义，后端零测试**。
+- **401 在默认态被完全吞掉**：`handleUnauthorized()` 第一行就早退，
+  无 toast、无跳转、无日志 —— 正好是 S-10 声称要避免的「静默」。
+  顺带发现原来 `isLogin` **兼职当了去重器**，把 toast 移出守卫会导致并发 401 刷屏。
+
+### 验证边界（务必阅读）
+
+- ✅ **前端**：`lint` / `vue-tsc` / `test:run` / `build` 全 0，**431 用例 / 23 个测试文件**
+- ✅ 后端 56 个 PHP 文件通过结构检查；3 个可复现的验证脚本（迁移幂等性、S-09 分类表）
+- ❌ **后端一行 PHP 都没执行过**。`server/vendor` 不存在，沙箱无 PHP / Composer / MySQL / Redis。
+  151 个测试方法**从未运行**，D-2 的超全局变量优先级是静态推理而非实测。
+- ❌ **未做前后端真实联调**，告警引擎的触发/去重/投递完全未审。
+
+> 因此后端只能称为「经过多轮静态审查的代码」，**不能**称为「运行验证通过」。
+
+### 本次新增
+
+- `server/config/bootstrap.php` —— env() 的唯一数据源加载点
+- 4 个后端测试文件（`AuthMiddlewareTest` / `PolicyStatusValidationTest` /
+  `IntegrityViolationMappingTest` / `EnvBootstrapTest`），
+  测试方法数 **109 → 151**
+- `web/src/lib/__tests__/api-client.auth.test.ts` —— Bearer 头回归
+- `.audit/` 8 份审查与复核报告（84KB 主报告 + 4 份攻击报告 + 汇总判定）
+- `scripts/` 3 个可复现的验证脚本
+
+
+---
+
 ## 前端 `web/` 原始提交（2026-09-29 → 2026-10-02）
 
 ### `909de27` — 2026-09-29 17:15 · `chore: deps update`
