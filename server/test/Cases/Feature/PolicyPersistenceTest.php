@@ -141,6 +141,10 @@ class PolicyPersistenceTest extends TestCase
         $this->assertSame('当前登录人', $copied['creatorName']);
 
         $service->destroy((int) $copy['id']);
+        // 源是带 status=1 创建的，契约规定「已启用的策略不可删除」（H1），
+        // 所以清理前必须先停用。原来直接 destroy 必然抛 409，
+        // 这条测试从写下来就没跑通过。
+        $service->changeStatus((int) $source['id'], 0);
         $service->destroy((int) $source['id']);
     }
 
@@ -327,7 +331,10 @@ class PolicyPersistenceTest extends TestCase
         $this->assertSame(42, (int) $row->project_id);
         $this->assertSame(2, (int) $row->condition_logic);
         $this->assertSame(2, (int) $row->object_type);
-        $this->assertSame('[8801,8802]', $row->object_ids);
+        // ⚠️ MySQL 的 JSON 列读回时会被规范化：逗号后加空格。
+        // 断言精确字符串 '[8801,8802]' 等于断言 MySQL 的输出格式，
+        // 与本项目行为无关。语义上要验的是「两个 id 都在、且仍是数字数组」。
+        $this->assertSame([8801, 8802], json_decode((string) $row->object_ids, true));
         $this->assertNull($row->object_group_ids, 'P14：不适用的字段应落 NULL');
         $this->assertNull($row->notification_template_ids, 'R-JSON-2：[] 落 NULL');
 
@@ -481,7 +488,17 @@ class PolicyPersistenceTest extends TestCase
                         $e->getBizCode(),
                         '缺省 status 应返回 422，实际 ' . $e->getBizCode()
                     );
-                    $this->assertArrayHasKey('status', $e->getErrors(), '422 必须带 status 字段级错误（契约 §0.4）。');
+                    // 契约 §0.4 规定 `extra.errors` 是 **列表**：
+                    //   "errors": [ { "field": "name", "message": "..." } ]
+                    // 不是以 field 为键的 map。所以这里按列表查，
+                    // 原来写 `assertArrayHasKey('status', $e->getErrors())`
+                    // 断言的是 map，对正确的列表实现永远为假。
+                    $fields = array_column($e->getErrors(), 'field');
+                    $this->assertContains(
+                        'status',
+                        $fields,
+                        '422 必须带 status 字段级错误（契约 §0.4）。实际 errors=' . json_encode($e->getErrors(), JSON_UNESCAPED_UNICODE)
+                    );
                 }
             }
 
