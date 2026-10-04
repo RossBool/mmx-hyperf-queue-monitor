@@ -209,9 +209,32 @@ class Presenter
      */
     public static function normalizeChannels(mixed $channels): array
     {
+        // ⚠️ 必须先把 JSON 字符串解成数组。
+        //    `AlarmNotificationTemplate` 的 `$casts` 里**没有** `channels` 这一项
+        //    （实测），所以模型属性读出来是**原始 JSON 字符串**，不是 PHP 数组。
+        //    旧实现直接 `(array) $channels`：字符串被当成「一个元素的数组」，
+        //    元素值还是那串 JSON → `(array) $string` 的键是 `0` → 读不到 `channel` 键
+        //    → PHP 8 抛 Undefined array key warning，值退化成 0
+        //    → `isUnconfigured()` 看到 `channel=0`（不是回调）+ `receivers=[]`
+        //    → **恒返回 true**，即「所有通知模板都算未配置完成」
+        //    → 用户把配好接收人的模板绑到策略上会被 422 拒绝。
+        //    这条路径上没有任何 cast 兜底，是真实用户必经的路径。
+        if (is_string($channels)) {
+            $trimmed = trim($channels);
+            if ($trimmed === '') {
+                return [];
+            }
+            $decoded = json_decode($trimmed, true);
+            // 解不出来宁可返回空数组，也不要拿整串字符去冒充一个渠道
+            $channels = is_array($decoded) ? $decoded : [];
+        }
+
         $result = [];
         foreach ((array) ($channels ?? []) as $channel) {
             $channel = (array) $channel;
+            if (! array_key_exists('channel', $channel)) {
+                continue;   // 结构不认识的条目直接跳过，不制造 channel=0 的假渠道
+            }
             $channel['channel'] = (int) $channel['channel'];
             $channel['receivers'] = array_values((array) ($channel['receivers'] ?? []));
             $channel['callbackUrl'] = $channel['callbackUrl'] ?? null;
@@ -230,10 +253,25 @@ class Presenter
         );
     }
 
-    /** DB NULL -> []（R-JSON-2） */
+    /**
+     * DB NULL -> []（R-JSON-2）
+     *
+     * ⚠️ 必须同时接受三种形态，因为它们的来源不同：
+     *   - `null`      : DB 里的 SQL NULL（normalizeJsonForWrite 把 [] 和 null 都归一化成 NULL）
+     *   - `[8801, 8802]` : Eloquent `array` cast 解出来的 PHP 数组（主路径）
+     *   - `'[8801,8802]'` : **未 cast 的 JSON 字符串** —— 任何 `Db::table()->select()`
+     *                    或漏配 cast 的 Model 都会返回这个形态
+     *
+     * 旧实现是 `array_map('intval', array_values((array) $value))`，
+     * 对 JSON 字符串会走 `(array) '[8801,8802]'` = `['[8801,8802]']`，
+     * 再 `intval('[8801,8802]')` = **0**（字符串以 `[` 开头，没有数字前缀）。
+     * 结果是 `notificationTemplateIds` 变成 `[0]`，
+     * 接着 `notificationTemplateSummaries([0])` 去查 id=0 的模板 —— 静默的错误数据。
+     * 主路径靠 Model 的 `array` cast 侥幸没踩到，但任何 raw query 都会踩。
+     */
     public static function intList(mixed $value): array
     {
-        return array_map('intval', array_values((array) ($value ?? [])));
+        return self::toIntList($value, []);
     }
 
     /** DB NULL -> null（R-JSON-1） */
@@ -242,6 +280,53 @@ class Presenter
         if ($value === null) {
             return null;
         }
-        return array_map('intval', array_values((array) $value));
+        return self::toIntList($value, []);
+    }
+
+    /**
+     * 把 null / PHP 数组 / JSON 字符串 / 逗号分隔串统一成 int[]。
+     *
+     * @return list<int>
+     */
+    private static function toIntList(mixed $value, array $fallback): array
+    {
+        if ($value === null || $value === '') {
+            return $fallback;
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+            if ($trimmed === '') {
+                return $fallback;
+            }
+            // JSON 数组字符串（DB 原生形态）
+            if ($trimmed[0] === '[' || $trimmed[0] === '{') {
+                $decoded = json_decode($trimmed, true);
+                // 解不出来就**不当成 0**，宁可返回空列表也不要伪造一个不存在的 id
+                $value = is_array($decoded) ? $decoded : $fallback;
+            } else {
+                // 逗号分隔："8801,8802"
+                $value = array_map('trim', explode(',', $trimmed));
+            }
+        }
+
+        if (! is_array($value)) {
+            // 标量：单个 id
+            $value = [$value];
+        }
+
+        $out = [];
+        foreach ($value as $item) {
+            if (is_array($item) || is_object($item) || $item === null || $item === '') {
+                // object_filters 这类嵌套结构不该被当成 id，跳过
+                continue;
+            }
+            if (! is_numeric($item)) {
+                continue;
+            }
+            $out[] = (int) $item;
+        }
+
+        return $out;
     }
 }
