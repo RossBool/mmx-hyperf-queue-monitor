@@ -69,6 +69,7 @@ import {
   alarmOperatorOptions,
   alarmPeriodOptions,
   alarmPolicyTypeOptions,
+  alarmSelectableMonitorTypeOptions,
   ConditionEditor,
 } from '../../components'
 import {
@@ -253,6 +254,38 @@ function setValue<K extends keyof PolicyFormValues>(key: K, value: PolicyFormVal
 const policyTypeOptions = computed(() => {
   const allowed = getPolicyTypeOptions(values.value.monitorType)
   return alarmPolicyTypeOptions.filter(option => allowed.includes(option.value))
+})
+
+/**
+ * 监控类型下拉的**最终**选项集。
+ *
+ * = `alarmSelectableMonitorTypeOptions`（只含 v1.0 可用的 1/2）
+ *   ∪ { 当前表单值（若它不在可选集里） }
+ *
+ * ## 为什么要有这个「∪」
+ *
+ * 契约 §1.1 说 monitorType 的 3/4/5 不可选（选了返回 422），所以新建向导不该提供它们
+ * —— 这就是 `alarmSelectableMonitorTypeOptions` 存在的理由。
+ *
+ * 但**存量数据里可能已经有 3/4/5**：契约说了 422，可数据库层没有 CHECK 强制
+ * （审查 S-14），历史数据或直接写库的调用都能落进去。
+ * 如果下拉只列 [1,2]，编辑这类策略时 Reka Select 找不到匹配的 item，
+ * `SelectValue` 会**回退显示 placeholder** —— 用户看到的是「请选择监控类型」，
+ * **存量值凭空消失**，而且他不知道自己正在编辑一条什么监控类型的策略。
+ *
+ * 所以：**不提供新选项，但让存量值可见且标注为不可选。**
+ * 标注而非静默，是为了告诉用户「这条数据有问题」而不是让他以为系统在骗他。
+ */
+const monitorTypeOptions = computed(() => {
+  const current = values.value.monitorType
+  if (current === undefined || current === null)
+    return alarmSelectableMonitorTypeOptions
+
+  if (alarmSelectableMonitorTypeOptions.some(o => o.value === current))
+    return alarmSelectableMonitorTypeOptions
+
+  const label = alarmMonitorTypeOptions.find(o => o.value === current)?.label ?? String(current)
+  return [...alarmSelectableMonitorTypeOptions, { label: `${label}（v1.0 不可选）`, value: current }]
 })
 
 const policyTypeLabel = computed(() =>
@@ -943,7 +976,7 @@ function cancelLeave() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem
-                        v-for="option in alarmMonitorTypeOptions"
+                        v-for="option in monitorTypeOptions"
                         :key="option.value"
                         :value="String(option.value)"
                       >
@@ -983,8 +1016,12 @@ function cancelLeave() {
                   <p class="text-sm text-destructive">
                     {{ errorOf('policyType') }}
                   </p>
-                  <p v-if="values.monitorType && !policyTypeOptions.length" class="text-xs text-muted-foreground">
-                    该监控类型在 v1.0 暂无可用策略类型
+                  <!-- ⚠️ 可达性防御：`alarmSelectableMonitorTypeOptions` 已过滤掉无 policyType 的
+                       monitorType（3/4/5），所以正常路径下 `policyTypeOptions` 不会为空。
+                       保留这条提示是因为：若将来联动表被改动而忘记同步过滤，这里是唯一
+                       能告诉用户「为什么走不下去」的地方 —— 静默空下拉无法排障。 -->
+                  <p v-if="values.monitorType && !policyTypeOptions.length" class="text-xs text-destructive">
+                    该监控类型在 v1.0 暂无可用策略类型，请返回重新选择
                   </p>
                 </div>
               </template>
