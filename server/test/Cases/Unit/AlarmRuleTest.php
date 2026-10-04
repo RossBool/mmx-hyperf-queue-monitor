@@ -460,19 +460,48 @@ class AlarmRuleTest extends TestCase
 
     public function testConflictCodesShareCodeWithDistinctMessages(): void
     {
-        // 契约 §0.5「同码多义」：409 下 5 个语义分支，code 相同、message 不同
+        // 契约 §0.5「同码多义」：409 下 5 个契约语义分支 + S-09 增量扩展的 RELATION_CONFLICT = 6。
+        // code 相同、message 不同。
+        //
+        // ⚠️ 必须按**语义分支**取值：5 个数值常量求值都是 409，
+        // `ErrorCode::message(409)` 只能返回一个字符串，这个断言在按数值码写时
+        // 永远不可能成立（早期实现因此让 5 条文案塌缩成 1 条）。
+        $reasons = [
+            ErrorCode::REASON_POLICY_STATUS_CONFLICT,
+            ErrorCode::REASON_POLICY_NAME_DUPLICATED,
+            ErrorCode::REASON_TEMPLATE_IN_USE,
+            ErrorCode::REASON_PRESET_READONLY,
+            ErrorCode::REASON_HISTORY_ALREADY_HANDLED,
+        ];
+
         $messages = [];
-        foreach ([
-            ErrorCode::POLICY_STATUS_CONFLICT,
-            ErrorCode::POLICY_NAME_DUPLICATED,
-            ErrorCode::TEMPLATE_IN_USE,
-            ErrorCode::PRESET_READONLY,
-            ErrorCode::HISTORY_ALREADY_HANDLED,
-        ] as $code) {
-            $this->assertSame(409, $code);
-            $messages[] = ErrorCode::message($code);
+        foreach ($reasons as $reason) {
+            $this->assertSame(409, ErrorCode::codeForReason($reason), '5 个 409 分支上线码必须都是 409');
+            $messages[] = ErrorCode::messageForReason($reason);
         }
         $this->assertCount(5, array_unique($messages), '5 个 409 分支的 message 必须各不相同');
+    }
+
+    public function testConflictMustGoThroughSemanticReason(): void
+    {
+        // 409 的文案不能靠数值码兜底：直接 new BusinessException(409) 必须当场报错，
+        // 而不是静默发出错误文案。
+        $this->expectException(\LogicException::class);
+        new BusinessException(ErrorCode::POLICY_STATUS_CONFLICT);
+    }
+
+    public function testConflictFactoryResolvesReasonToCodeAndMessage(): void
+    {
+        $e = BusinessException::conflict(ErrorCode::REASON_PRESET_READONLY);
+        $this->assertSame(409, $e->getBizCode());
+        $this->assertSame('预置模板不可删除', $e->getMessage());
+
+        $e2 = BusinessException::conflict(
+            ErrorCode::REASON_TEMPLATE_IN_USE,
+            '模板已被策略「生产 CVM」引用，不可删除',
+        );
+        $this->assertSame(409, $e2->getBizCode(), '显式文案不应改变上线码');
+        $this->assertSame('模板已被策略「生产 CVM」引用，不可删除', $e2->getMessage());
     }
 
     public function testBusinessExceptionCarriesFieldErrors(): void

@@ -15,7 +15,7 @@ const { fetchMock, notify, push } = vi.hoisted(() => {
 
 vi.mock('vue-sonner', () => ({ toast: { error: notify } }))
 vi.mock('@/router', () => ({ default: { push } }))
-vi.mock('@/constants/app-config', () => ({ API_BASE_URL: 'https://example.test/api', API_TIMEOUT: 5000, USE_MOCK: false }))
+vi.mock('@/constants/app-config', () => ({ API_BASE_URL: 'https://example.test/api', API_TIMEOUT: 5000, API_TOKEN: '', USE_MOCK: false }))
 vi.mock('@/plugins/pinia/setup', async () => {
   const { createPinia } = await import('pinia')
   return { default: createPinia() }
@@ -108,5 +108,38 @@ describe('aPI error handling', () => {
     expect(authStore.isLogin).toBe(false)
     expect(push).toHaveBeenCalledTimes(2)
     expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  /**
+   * 复核 D-1 的直接回归。
+   *
+   * 本文件其余用例的 `beforeEach` 都把 `isLogin` 强制置 true，因此它们**只覆盖已登录分支**。
+   * 而告警页没有 `meta.auth`、`isLogin` 默认为 false —— **默认态走的是另一条路径**。
+   *
+   * 修复前那条路径在第一行 `if (!authStore.isLogin) return` 早退：
+   * 无 toast、无跳转、无日志，用户只看到一个全空的页面。
+   * S-10 的设计意图是「让 401 暴露出来」，机制层做到了，最外层却把信号吞了。
+   */
+  it('surfaces a 401 even when not logged in (default state)', async () => {
+    // `unauthorizedNotified` 是模块级状态，跨用例残留。
+    // 用 resetModules + 动态 import 拿一个全新模块实例，
+    // 而不是给生产代码开一个「仅供测试」的复位函数。
+    vi.resetModules()
+    notify.mockClear()
+    push.mockClear()
+    const { apiFetch: freshApiFetch } = await import('@/lib/api-client')
+
+    fetchMock.mockImplementation(() => respond(401))
+    authStore.isLogin = false
+
+    await expect(freshApiFetch('/alarm/policies')).rejects.toMatchObject({ status: 401 })
+
+    expect(
+      notify,
+      '默认态下的 401 必须有提示 —— 静默失败会让「后端没配鉴权」这类配置错误完全无法定位。',
+    ).toHaveBeenCalledExactlyOnceWith('Your session has expired, please sign in again.')
+
+    // 但**不能**跳转：登录页自己 401 时会自我重定向成环
+    expect(push, '未登录时不应跳转，否则登录页自身 401 会形成重定向环。').not.toHaveBeenCalled()
   })
 })
