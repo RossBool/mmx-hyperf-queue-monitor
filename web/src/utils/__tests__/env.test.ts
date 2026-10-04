@@ -235,6 +235,7 @@ describe('env module', () => {
     vi.stubEnv('VITE_SERVER_API_URL', 'https://api.example.com')
     vi.stubEnv('VITE_SERVER_API_PREFIX', '/v1')
     vi.stubEnv('VITE_SERVER_API_TIMEOUT', '9000')
+    vi.stubEnv('VITE_SERVER_API_TOKEN', 'dev-token-1')
     vi.stubEnv('VITE_USE_MOCK', 'true')
 
     const { env, envError } = await import('@/utils/env')
@@ -244,6 +245,7 @@ describe('env module', () => {
       VITE_SERVER_API_URL: 'https://api.example.com',
       VITE_SERVER_API_PREFIX: '/v1',
       VITE_SERVER_API_TIMEOUT: 9000,
+      VITE_SERVER_API_TOKEN: 'dev-token-1',
       VITE_USE_MOCK: true,
     })
   })

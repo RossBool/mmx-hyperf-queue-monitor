@@ -7,6 +7,16 @@ export const EnvSchema = z.object({
   VITE_SERVER_API_PREFIX: z.string(),
   VITE_SERVER_API_TIMEOUT: z.coerce.number().default(5000),
   /**
+   * 告警接口的 Bearer token —— 契约 §0.1：`Authorization: Bearer <token>`。
+   *
+   * ⚠️ 后端的 `AuthMiddleware` 是 fail-closed 的（`ALARM_STATIC_TOKENS` 未配置
+   * 时拒绝所有请求），所以这里留空 = 真实后端一律 401。
+   * 该 token 必须出现在后端 `ALARM_STATIC_TOKENS` 白名单里。
+   *
+   * 接入真实用户系统后，这个值应改为从登录态读取，而不是写死在 env 里。
+   */
+  VITE_SERVER_API_TOKEN: z.string().default(''),
+  /**
    * Mock 开关：为 `true` 时 `apiFetch` 走本地 mock，不发真实 HTTP 请求，
    * 让前端在后端（PHP/Hyperf）未就绪时也能跑通。
    *

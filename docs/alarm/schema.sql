@@ -7,9 +7,15 @@
 -- 指标字典: metrics.md
 --
 -- 【执行前提】
---   MySQL >= 8.0.13（使用 JSON 列 + CHECK 约束 + 表达式默认值的能力）
+--   MySQL >= 8.0.16（CHECK 约束在 8.0.16 以下**只解析不执行**，本文件 29 条 CHECK 会静默失效）
 --   执行前请确认当前库为 utf8mb4。本文件可整段直接执行：
 --     mysql -u<user> -p <db> < schema.sql
+--
+-- 【⚠️ 本文件是「推倒重建」脚本，不是迁移】
+--   这里的 `DROP TABLE IF EXISTS` + `CREATE TABLE` 是**故意**的：本文件由运维手动执行，
+--   语义就是"删干净重来"，执行前必须确认库里没有需要保留的数据。
+--   应用的 `server/migrations/*.php` 走的是**相反**策略：`CREATE TABLE IF NOT EXISTS`，
+--   重跑幂等、不清数据（审查 S-07）。两者语义不同，请勿"统一风格"改成同一种。
 --
 -- 【全局设计取舍】（详细理由见 domain.md §5）
 --   1. 硬删除 vs 软删除
