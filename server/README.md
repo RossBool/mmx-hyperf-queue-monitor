@@ -196,7 +196,7 @@ vendor/bin/co-phpunit --prepend test/bootstrap.php
 
 | 测试套件 | 是否需要数据库 | 覆盖内容 |
 | --- | --- | --- |
-| `test/Cases/Unit/AlarmRuleTest.php` | ❌ 不需要 | 条件数量/范围、枚举、字典回填、渠道校验、状态机映射、JSON 归一化、指标字典 28 条自检 |
+| `test/Cases/Unit/AlarmRuleTest.php` | ❌ 不需要 | 条件数量/范围、枚举、字典回填、渠道校验、状态机映射、JSON 归一化、指标字典 38 条自检 |
 | `test/Cases/Unit/CopyNameTest.php` | ❌ 不需要 | 复制命名顺序、99 次上限、按字符截断、长度 ≤ 128 |
 | `test/Cases/Unit/PolicyPayloadValidatorTest.php` | ❌ 不需要 | P12 / P13 / **P14 四类型矩阵 + 12 个反例** / N9 + 真实 `Pagination::fromRequest()`（含非数字 -> 422） |
 | `test/Cases/Feature/PolicyPersistenceTest.php` | ✅ **需要** | **update() 全链路（读库断言）**、名称唯一、删除限制、复制、monitorType 联动、启停幂等、历史状态机、时间区间 |
@@ -223,7 +223,7 @@ server/
 │       ├── databases.php          MySQL 连接，全部走 env
 │       ├── dependencies.php
 │       ├── exceptions.php         全局异常处理器注册
-│       ├── metrics.php            ★ 28 个指标字典（metrics.md 的机器可读副本）
+│       ├── metrics.php            ★ 38 个指标字典（metrics.md 的机器可读副本）
 │       ├── middlewares.php        鉴权中间件
 │       └── server.php             Swoole server 配置
 ├── migrations/                    7 个迁移（6 建表 + 1 种子）
@@ -284,7 +284,7 @@ server/
 | ⑤ | DELETE | `/api/alarm/policies/{id}` | `true` |
 | ⑥ | POST | `/api/alarm/policies/{id}/status` | `AlarmPolicyDetail` |
 | ⑦ | POST | `/api/alarm/policies/{id}/copy` | `{id, name}` |
-| ⑧ | GET | `/api/alarm/metrics` | `AlarmMetric[]`（28 条，不分页） |
+| ⑧ | GET | `/api/alarm/metrics` | `AlarmMetric[]`（38 条，不分页） |
 | ⑨ | GET | `/api/alarm/condition-templates` | `Page<AlarmConditionTemplate>` |
 | ⑩ | POST | `/api/alarm/condition-templates` | `AlarmConditionTemplate` |
 | ⑪ | PUT | `/api/alarm/condition-templates/{id}` | `AlarmConditionTemplate` |
