@@ -125,12 +125,21 @@ DB_COLLATION=utf8mb4_0900_ai_ci
 可选：
 
 ```ini
-# 鉴权占位中间件的 token 白名单（逗号分隔）。留空 = 不校验（仅本地联调）。
-ALARM_STATIC_TOKENS=dev-token-1,dev-token-2
+# 鉴权占位中间件的 token 白名单（逗号分隔）。
+# ⚠️ 留空 = **拒绝所有请求**（fail-closed）。必须显式配置，否则全部告警接口返回 401。
+# 生成一个随机 token（不要复用任何示例值，也不要写回 .env.example）：
+#     php -r 'echo bin2hex(random_bytes(24)), PHP_EOL;'
+ALARM_STATIC_TOKENS=把上一步生成的token粘到这里
+# 仅本地联调用：显式关闭鉴权。生产环境禁止设置。
+# ALARM_AUTH_DISABLED=true
 # 当前登录人姓名（creatorName / handlerName）。接入真实用户服务后由 token 解析。
 ALARM_CURRENT_USER=张三
 SERVER_PORT=9501
 ```
+
+> ⚠️ **前端也要配**：`web/.env` 的 `VITE_SERVER_API_TOKEN` 必须与上面的白名单一致，否则所有请求 401。
+> 仓库里两份示例 env 的 token **都是空的**——这是故意的，照抄 README 不会得到一个能用的环境。
+> 开发期最省事的做法是本地设 `ALARM_AUTH_DISABLED=true` + 前端 `VITE_USE_MOCK=true`，先跑通再接真后端。
 
 ### 第 4 步：执行迁移
 
@@ -159,13 +168,18 @@ php bin/hyperf.php start
 # 指标字典（无需 token 白名单时可直接访问）
 curl -s http://127.0.0.1:9501/api/alarm/metrics | head -c 400
 
-# 策略列表
-curl -s -H 'Authorization: Bearer dev-token-1' \
+# 策略列表（把 $TOKEN 换成你 .env 里配的那个）
+curl -s -H "Authorization: Bearer $TOKEN" \
   'http://127.0.0.1:9501/api/alarm/policies?page=1&pageSize=20'
 
 # 404 语义
-curl -s -H 'Authorization: Bearer dev-token-1' http://127.0.0.1:9501/api/alarm/policies/999999
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9501/api/alarm/policies/999999
 # 期望：{"data":null,"extra":{},"code":404,"message":"资源不存在","success":false}
+
+# 白名单未配置时的行为（fail-closed，应为 401）
+# 先 unset ALARM_STATIC_TOKENS 重启，再执行：
+curl -s -i http://127.0.0.1:9501/api/alarm/policies | head -1
+# 期望：HTTP/1.1 401
 ```
 
 ### 第 7 步：跑测试
