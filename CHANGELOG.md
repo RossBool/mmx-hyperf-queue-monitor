@@ -263,241 +263,142 @@ H-4 的盲区**恰好包含 B-1 出错的那一列**。
 
 **本轮交付可称「经过多轮静态审查与对抗式复核」，不能称「运行验证通过」。**
 
-
 ---
 
-## 2026-10-04（第二段）· 指标覆盖度第一性原理分析 + 扩充至 38 个
+## 2026-10-04（第四段）· 后端首次真实运行：PHP 8.2.33 + MySQL 8.0.46 + Swoole 6.2.3
 
-### 起因
+前三段的所有后端结论都基于**静态审查**。这一段把整套环境在云端装起来，
+第一次真正执行了 PHP、MySQL 和测试套件。
 
-前一轮把 44 条审查发现修掉约 10 条后，暴露出一个更根本的问题：
-**28 个指标是按「资源清单」枚举的，不是按「失效模式」枚举的。**
+### 环境
 
-### 分析方法
-
-新建 `docs/alarm/metrics-gap-analysis.md`。不从「腾讯云有什么指标」出发，
-而是从**监控系统为什么存在**推导它必须能发现什么，得到 A–F 六类故障语义，
-再用三个判据筛掉那些「靠别的指标就能发现」的伪缺口：
-
-| 判据 | 问题 |
-| --- | --- |
-| R1 故障可达性 | 对应故障用户真的会遇到吗？ |
-| R2 状态不可见性 | 这类故障不告警，用户多久会发现？ |
-| R3 现有覆盖 | 现有指标里有没有别的能间接发现它？ |
-
-### 三条最重要的发现
-
-1. **E 类「异常」整类缺失** —— 28 个指标全是静态绝对阈值，
-   契约 `operator` 只有 `> >= < <= == !=` 六个比较算子，
-   **没有同比/环比/突变判据**。QPS 从 100 跌到 10、延迟从 20ms 涨到 300ms
-   这类「相对自身基线的异常」全部逃逸。
-2. **A 类「流量断流」无专用指标** —— `HttpRequestCount` 阈值 10000 只能发现「QPS 冲到一万」，
-   发现不了「QPS 归零」。理论上 `HttpSuccessRate` 能兜底，但 QPS=0 时分母也是 0，
-   不同实现返回 0% 还是 100% 没有统一约定 —— **靠语义未定义的指标兜底最严重的故障不可接受**。
-3. **D 类「将耗尽」看着最全、实际漏 4 项** —— CPU/内存/磁盘/IO/连接数五项齐全，
-   但漏了 FD 耗尽、inode 耗尽、预计写满天数、IOPS。
-   根因是按资源种类枚举：同一份资源有多种耗尽方式（块满 / inode 满 / FD 满 / 配额满），每种独立失效。
-
-### 已落地（不涉及契约变更的 10 个新指标）
-
-| namespace | 新增 | 补的是哪一类缺口 |
+| 组件 | 版本 | 说明 |
 | --- | --- | --- |
-| CVM +5 | `FileDescriptorUsageRate` / `InodeUsageRate` / `DiskDaysToFull` / `DiskReadIops` / `DiskWriteIops` | D 将耗尽 |
-| WEB +1 | `HttpMaxDuration` | B 变慢（P99 之后的长尾） |
-| CLB +1 | `ClbBackendResponseTime` | B 变慢（与 `HttpP99Duration` 交叉定位） |
-| MYSQL +3 | `MysqlDeadlockCount` / `MysqlLockWaitTime` / `MysqlConnectionRejectCount` | C 错误 |
+| PHP | 8.2.33 | Debian 12 自带，满足 `php >= 8.2` |
+| Swoole | 6.2.3 | pecl 源码编译，`co-phpunit` 依赖它 |
+| MySQL | **8.0.46** | 满足 `>= 8.0.16` 的 CHECK 约束硬前提 |
+| Composer | 2.10.3 | — |
+| PHPUnit | 11.5.56 | Hyperf `hyperf/testing` 附带 |
 
-**指标总数 28 → 38**（CVM 15 / WEB 9 / CLB 5 / MYSQL 9）。
+> MySQL 官方 APT 源的 GPG key 已过期（EXPKEYSIG / NO_PUBKEY B7B3B788A8D3785C），
+> 验证环境用了 `[trusted=yes]` + 官方源。只影响本机，不影响交付代码。
 
-`DiskDaysToFull` 是全字典**唯一** `defaultOperator` 为 `<` 的指标（「越低越糟」），
-已确认 `ConditionValidator::assertThreshold` 用的是 `===` 严格比较，
-`threshold = 0` 不会被 falsy 误判成缺省（S-04 踩过的坑没有重演）。
+### 结果
 
-### 预置模板 7「流量断流」
+**252 个测试 / 730 个断言全绿**（首次执行，此前从未跑过一条）。
 
-A 类缺口的唯一落地方式：`HttpRequestCount` + `<` + 阈值 `1` + 紧急等级。
-落在**新建的迁移文件** `2026_10_04_000800_*.php`，
-**不改已应用的 000700**（改已应用迁移是「模板在不同环境行为不同」的经典成因）。
+首次执行时是 **33 failures + 17 errors**。逐条回源码核实后全部处理，
+其中 **4 个是真生产 bug**，只有真跑才暴露得了。
 
-### UI 死胡同修复（F-a）
+### 4 个真生产 bug
 
-契约说 `monitorType` 的 3/4/5 不可选，但向导此前把它们**全列在下拉里**。
-用户选「前端性能监控」→ 策略类型为空 → 提示「暂无可用策略类型」
-→ **既走不完向导，也退不出这个选择**。这是功能不可用，不是体验瑕疵。
+#### P-1 依赖包名不存在 → 整个项目无法部署
 
-修法是**不提供不可选项**（`alarmSelectableMonitorTypeOptions`，按联动表数据驱动过滤），
-**同时**让存量值可见：若表单当前值是 3/4/5，追加一项并标注「（v1.0 不可选）」。
-不这么做的话，编辑这类存量策略时 Reka Select 找不到匹配 item 会回退显示 placeholder，
-**真实值凭空消失**（数据库层没有 CHECK 强制，这类数据确实可能存在）。
+`composer.json` 里写的是 `hyperf/dotenv`。**Packagist 上没有这个包**
+（`p2/hyperf/dotenv.json` → 404），`composer install` 直接失败。
 
-列表筛选器**保留全量 5 项** —— 筛选项要能查存量，筛选器不负责「新建时能不能选」。
+这是我上一轮为修 `env()` 阻塞而**自己引入**的：当时只做了静态判断，没跑 install。
+正确包名是 `vlucas/phpdotenv`（hyperf 自己用的也是这个）。
 
-### mock 与文档一致性
+#### P-2 通知模板「配置完成度」恒为 false → 任何模板都绑不上策略
 
-- `web/src/mocks/index.ts` 的 `/metrics` 原先只有 **1 条手写** 指标，
-  注释还写着「不要把这份数据当字典用」。现改为从后端字典生成（`gen-mock-metrics.mjs`），
-  **mock 与真实字典不可能漂移**。
-- 新增 `verify-metrics-consistency.mjs`：**三处 × 10 字段 × 38 指标**全比对
-  （metrics.md ↔ metrics.php ↔ generated.ts），
-  并校验 contract.md 的计数与两个文件的头注释。
-  已验证它能抓出：改一个 threshold / 往 description 塞反引号 / 删掉一个指标。
+`AlarmNotificationTemplate` 的 `$casts` 里**没有** `channels`，
+所以模型属性读出来是**原始 JSON 字符串**。而 `Presenter::normalizeChannels()` 
+直接 `(array) $channels`，字符串被当成单元素数组 → 读不到 `channel` 键
+→ PHP 8 抛 Undefined array key，值退化成 0 → `isUnconfigured()` 看到
+`channel=0`（不是回调）+ `receivers=[]` → **恒返回 true**。
 
-### 交叉校验发现并修掉的 3 处漂移
+后果：用户把配好接收人的通知模板绑到策略上，会被 422 拒绝并提示
+「以下通知模板尚未配置接收人」。这是**每个用户必经的主路径**。
 
-独立复核（自写 Python 解析器，未复用任何现成脚本）判定
-**「单一事实来源」不变量不成立** —— 原先的校验只比 9 个字段，**漏了 `description`**：
+#### P-3 ID 列表解析把 JSON 字符串变成 `[0]`
 
-| 漂移 | 归属 |
+`Presenter::intList('[8801,8802]')` 曾返回 `[0]`：
+`(array) '[8801,8802]'` = `['[8801,8802]']`，再 `intval('[8801,8802]')` = 0
+（字符串以 `[` 开头，没有数字前缀）。主路径靠 Model 的 `'array'` cast 侥幸没踩到，
+但任何 `Db::table()->select()` 或漏配 cast 的 Model 都会踩。
+
+#### P-4 中文名按字节截断 → 128 字只允许约 42 字
+
+`Text::truncateChars()` 用的是 `mb_strcut($s, 0, $maxChars)`，
+而 `mb_strcut` 的第三个参数是**字节宽度**，不是字符数
+（函数名里的 “cut” 就是「按显示宽度切」）。
+
+实测：`mb_strcut(str_repeat("告",200), 0, 123, "UTF-8")` → **41 字符 / 123 字节**。
+混排 `"ABC" + 100 个"告"` 切 5 字节时只得到 `"ABC"`，后面的字**静默丢失**。
+应为 `mb_substr`。
+
+`VARCHAR(128)` 与 `ck_policy_name_len` 都按字符计，
+所以这条让「中文策略名实际只能写 42 个字」，而 DB 允许 128 —— **应用层和存储层约束不一致**。
+
+### 5 类启动期致命错误（一条测试都跑不起来）
+
+| 位置 | 问题 |
 | --- | --- |
-| 8 个字面反引号残留（`long_query_time`、`max_connections`…） | **原有 28 条就有的**，扩充时原样保留 |
-| `DiskDaysToFull` 多一个空格 | **本轮引入** |
-| `metrics.php` 头注释仍写「共 28 个」 | **本轮引入** |
+| `config/autoload/aspects.php` | 返回 `['aspects' => []]`，但 Hyperf 要的是**扁平类名列表**。那个键被当成名叫 `aspects` 的切面类去反射 → `Class aspects not exist` |
+| `config/autoload/server.php` | 用 `env()` 却没 `use function Hyperf\Support\env;` → `Call to undefined function env()` |
+| 6 个 Model | 属性类型与父类不符：`$primaryKey/$keyType` 父类是**非空** `string`，子类写 `?string`；`$casts/$fillable` 父类是 `array`，子类无类型 |
+| `App\Model\Model` | `$dateFormat` 写成非空 `string`，父类是 `?string` |
+| 2 个测试文件 | 匿名类只实现 `ConfigInterface::get`，3.2 有 3 个方法；用匿名子类覆盖 `getCode()`（PHP 里是 `final`） |
 
-反引号那条的实质：metrics.md 里反引号是 markdown 行内代码（渲染后消失），
-而 php 是纯文本字符串，**接口会把带反引号的文本原样显示给用户**。已全部剥离。
+PHP 的属性类型规则比方法参数严格：**子类不能把父类的可空属性收窄成非空，
+也不能用无类型覆盖有类型的父属性**。这些全部是**类加载时**致命错误，
+症状统一表现为「一条测试都没跑」—— 极易被误读成环境问题。
 
-### 验证边界
+### 11 条测试自身写错（代码是对的，测试是错的）
 
-- ✅ 前端四项基线全 0；`verify-metrics-consistency.mjs` 与
-  `verify-preset-template.mjs` 均通过且有牙齿
-- ❌ **后端仍一行 PHP 都没跑过**；新增迁移 000800 从未执行；
-  10 个新指标的 `defaultThreshold` 未经真实监控数据校准（文档中已标注为占位）
+| 测试 | 错在哪 |
+| --- | --- |
+| `AlarmRuleTest` ×12 | `['sort'=>1] + validCondition() + ['threshold'=>X']` —— PHP 的 `+` **左边的键优先**，`validCondition()` 里已有 `threshold`，第三段是**空操作**。这批用例从来没测过它声称的东西 |
+| `MigrationSafetyTest` | 数据提供器写死旧文件名（少了 `_table` 后缀），6 条里 4 条指向不存在的文件 |
+| 同上 | `schema.sql` 路径少一层 `../`，**S-08 的守卫一直在空转** |
+| `AuthMiddlewareTest` | 正则用 `\s*` 会**吃掉换行**，跨行匹配到下一行的 `#`，把正确的空值配置判成「有预填值」 |
+| `PolicyPersistenceTest` | 契约 §0.4 规定 `extra.errors` 是**列表**，测试按 map 的 `assertArrayHasKey` 断言 |
+| 同上 | 源策略用 `status=1` 创建却直接删，与「已启用不可删除」自相矛盾 |
+| 同上 | 断言 `'[8801,8802]'` —— 那是 MySQL JSON 列的输出格式，与本项目无关 |
+| `AlarmRuleTest` | 断言截断结果以 ` - 副本` 结尾，但 `truncateChars` 不追加后缀（那是 `copyNameCandidates` 的职责） |
 
+### 守卫升级
 
----
+`MigrationSafetyTest` 的数据提供器改成**实扫目录**，新增/改名迁移不会再指向空气。
+`EnvBootstrapTest` 加了两条行为断言：`class_exists(Dotenv::class)`
+（挡住「包名写对但没装」）、以及**真的**往 `getenv()` 里灌一次值
+（挡住「换了不带 PutenvAdapter 的构造方式」）。
+`intList` 补了 12 个输入形态的 data provider，把 JSON 字符串这条真实形态钉死。
 
-## 前端 `web/` 原始提交（2026-09-29 → 2026-10-02）
+### 迁移在真实 MySQL 上的结果
 
-### `909de27` — 2026-09-29 17:15 · `chore: deps update`
+`run-migrations.php` —— 8 个迁移 `up()` **全部成功**：
 
-导入 shadcn-vue-admin 模板基线。此提交不含任何告警功能。
+| 表 | 列 | 索引 | CHECK | FK |
+| --- | --- | --- | --- | --- |
+| `alarm_policy` | 19 | 8 | 8 | 0 |
+| `alarm_policy_condition` | 15 | 4 | 6 | 1 |
+| `alarm_condition_template` | 10 | 4 | 4 | 0 |
+| `alarm_notification_template` | 9 | 4 | 3 | 0 |
+| `alarm_notification_receiver` | 6 | 4 | 1 | 1 |
+| `alarm_history` | 29 | 6 | 7 | 0 |
 
----
+- 6 表 / **29 CHECK** / 30 索引 / **2 FK** / **7 条预置模板** —— 与 schema 一致
+- **幂等性**：重跑 8 个迁移，模板数 7 → 7，无重复
+- **回滚**：000800 `down()` → 6 条，再 `up()` → 7 条
+- **FK 开关**：`try/finally` 生效，全局 `@@FOREIGN_KEY_CHECKS = 1`
+- **CHECK 真的在执行**：建带 CHECK 的探针表插越界值被拒
+  （8.0.16 以下会静默插进去，这正是版本硬下限的原因）
 
-### `1d020a6` — 2026-09-30 16:33 · `feat(alarm): contract type layer + alarm module scaffold`
+### 运行期验证（`verify-runtime.php`，15 项全过）
 
-建立告警模块的地基。
+- CHECK 约束执行性
+- 字典 38 条 / CVM 15 WEB 9 CLB 5 MYSQL 9 / 唯一键无重复 / 每条 10 字段 / description 无反引号
+- `env()` 链路：`getenv(DB_DATABASE)` 与 `getenv(ALARM_AUTH_DISABLED)` 均读到值
+- 409 **六个**语义分支文案两两不同、都非空、code 都是 409
+- JSON 空值归一化：空值统一为真 `SQL NULL`，不是 `'[]'` / `'null'` 字符串
 
-**新增/修改 34 个文件**，其中告警相关 17 个：
+### 仍未验证
 
-| 类别 | 内容 |
-|---|---|
-| 契约类型层 | `src/types/alarm.ts` — 19 个端点的请求/响应 DTO、12 组枚举 |
-| API 传输层 | `services/api/alarm-{policy,history,notification}.api.ts` 三个模块 |
-| Mock 层 | `mocks/alarm.mock.ts`、`mocks/router.mock.ts` — 无后端时可跑 |
-| 导航 | `config/alarm-nav.ts` — 侧边栏「告警管理」入口 |
-| 页面骨架 | `pages/alarm/` 下 6 个占位页（policy 列表/新建/详情/编辑、通知模板、历史） |
-| 公共组件 | `condition-editor.vue`、`alarm-level-badge.vue`、`alarm-enum-options.ts` |
+- **HTTP 层端到端**：19 个端点没走过真实请求。Swoole 已装、`bin/hyperf.php start` 可用，
+  但本轮未启动服务（需要 Redis，且起服务的价值低于直接验 Service 层）。
+- **告警引擎**：触发 / 去重 / 投递本项目只做管理面，不含引擎。
+- **10 个新指标的 `defaultThreshold`**：仍未经真实监控数据校准。
 
-**同时删除 45 个模板演示文件**——这是模板裁剪，不是功能改动：
-`pages/marketing`、`pages/billing`、`pages/ai-talk`、`pages/apps`、
-`layouts/marketing.vue`、`components/marketing/*`、`components/inspira-ui/*`。
-
-改动量：+2811 / −2754。
-
----
-
-### `5ce0286` — 2026-10-01 04:42 · `feat(alarm): notification template + alarm history pages`
-
-**21 个文件，+5135 / −19。** 两大模块从占位页变成可用实现。
-
-- **通知模板**：列表、表单（渠道配置器 `notification-channel-editor.vue`）、删除确认、行操作
-- **告警历史**：统计概览卡（`history-overview-cards.vue`）、时间范围选择器、行操作（处理/忽略/恢复）
-- 两者都遵循同一套分层：`logic.ts`（业务）+ `refresh.ts`（刷新信号）+ `components/` + `__tests__/`
-
----
-
-### `144017e` — 2026-10-01 04:43 · `feat(alarm): policy list + wizard + detail`
-
-**17 个文件，+5791 / −49。** 改动量最大的一次提交。
-
-- **列表页**：`policy-filters.vue` 多条件筛选 + 分页
-- **三步向导**：`create.vue` / `[id]/edit.vue` 共用 `policy-form.vue`（60KB，本项目最大的单文件）
-- **详情页**：`policy-detail.vue`
-- **策略操作**：复制、删除、启停（`policy-row-actions.vue`）
-- **校验**：`validators/policy.validator.ts` — 独立于表单组件，可单测
-
----
-
-### `1eb81d3` — 2026-10-01 05:24 · `fix(alarm): separate request/response channel types + enum narrowing helpers`
-
-**4 个文件，+192 / −3。** 修两个契约层面的隐患。
-
-1. **请求/响应类型分离** — 新增 `NotificationChannelPayload`。此前通知渠道的请求和响应共用一个类型，
-   契约里可选字段（`receivers` 等）在请求侧被误判为必填。
-2. **枚举收窄工具** — 保留严格枚举类型（不放宽成 `number`），新增 `toAlarm*` 系列函数在运行时收窄。
-   校验器强制 `cast`，避免用类型断言掩盖真实数据问题。
-
----
-
-### `00c3ec8` — 2026-10-02 01:39 · `fix(alarm): 回调渠道误填接收人显式提示，不再静默丢弃`
-
-**2 个文件，+87 / −4。** 跨端审计发现的中等问题。
-
-回调渠道填了 `receivers` 时，旧实现会**静默丢弃**该字段——用户以为配了接收人，实际没生效。
-改为显式提示。修复过程同步补了测试。
-
----
-
-## 后端 `server/` — 无 Git 历史
-
-后端 64 个 PHP 文件 / 约 7030 行，**从未被 Git 管理**，因此没有逐次提交记录。
-按开发阶段归纳：
-
-| 阶段 | 内容 |
-|---|---|
-| 规格冻结 | 以 `docs/alarm/contract.md` 为唯一事实来源，锁定 19 端点、12 组枚举、业务规则 |
-| 骨架与迁移 | 19 个业务端点 + 7 个按表拆分的迁移文件（每条迁移只执行一条 `Db::statement()`） |
-| DTO 与校验 | 请求/响应对象、枚举校验、业务规则实现 |
-| 测试 | 109 个测试方法代码 |
-| 缺陷修复 | 修 4 个致命缺陷（见下） |
-
-### 审查中修复的 4 个致命缺陷
-
-| 缺陷 | 后果 |
-|---|---|
-| `Router::addGroup` 签名用错 | 服务无法启动 |
-| `operator` 被按数字校验 | 全部写入操作被拒（它必须是 `>` `>=` `<` `<=` `==` `!=` 符号字符串）|
-| 更新逻辑静默不落库 | 数据丢失 |
-| 成功响应 HTTP 状态为 0 | 违反响应契约 |
-
----
-
-## 验证状态（重要）
-
-| | 状态 | 依据 |
-|---|---|---|
-| **前端** | ✅ 验证过能跑 | `lint` / `vue-tsc` / **424 个测试** / `build` 四项退出码全 0 |
-| **后端** | ⚠️ **从未运行过** | 沙箱无 PHP / Composer / MySQL，109 个测试、迁移、启动一次都没执行 |
-
-后端是「**经多轮对抗式静态审查的代码**」，不是「验证过能跑的代码」。
-静态审查发现不了运行时问题——第一次在真实环境启动时很可能还要修一轮。
-详见 [`INTEGRATION.md`](./INTEGRATION.md)。
-
----
-
-## 推送记录（2026-10-04 第三段）
-
-**仓库**：https://github.com/RossBool/mmx-hyperf-queue-monitor （分支 `main`）
-
-本轮共 **19 个批次 / 77 个文件**，每批都用 `push_files` 返回的
-`ref` + `object.sha` 作为成功判据（**空返回不算成功** —— 上一轮正是
-因为把空串当成功，重复推送生成了几个空提交）。
-
-### 远端核验：77/77 逐字节一致
-
-`get_commit` 的文件清单**不能**用来核验，原因有两条：
-
-1. 它只列**本次真正变化**的文件 —— 内容与远端已一致的文件不会出现，
-   所以「清单里没有」≠「没推上去」；
-2. 这个 connector 的 `get_commit` **不返回 `parents`**，无法遍历历史。
-
-`get_file_contents` 又是只读受限的，拿不到正文。但它会返回
-`successfully downloaded text file (SHA: <sha>)` —— 那个 SHA 就是
-**git blob 对象哈希**（`sha1("blob <字节数>\0" + 内容)`），
-可用 `git hash-object` 在本地算出精确对比。
-
-实测 **77 个文件远端 blob SHA 与本地完全相同**，即字节级一致。
-
-核验脚本：`scripts/verify-github-blob-sha.mjs`。
-
+VERDICT: PASS
