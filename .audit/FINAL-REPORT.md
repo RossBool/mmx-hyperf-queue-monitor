@@ -1144,3 +1144,143 @@ H-5 的文案在主动误导读者。
 **不能称为「运行验证通过」**。后端的所有运行时结论都必须在真实环境复验。
 
 VERDICT: PASS
+
+---
+
+## 2026-10-04（第四段）· 后端首次真实运行：PHP 8.2.33 + MySQL 8.0.46 + Swoole 6.2.3
+
+前三段的所有后端结论都基于**静态审查**。这一段把整套环境在云端装起来，
+第一次真正执行了 PHP、MySQL 和测试套件。
+
+### 环境
+
+| 组件 | 版本 | 说明 |
+| --- | --- | --- |
+| PHP | 8.2.33 | Debian 12 自带，满足 `php >= 8.2` |
+| Swoole | 6.2.3 | pecl 源码编译，`co-phpunit` 依赖它 |
+| MySQL | **8.0.46** | 满足 `>= 8.0.16` 的 CHECK 约束硬前提 |
+| Composer | 2.10.3 | — |
+| PHPUnit | 11.5.56 | Hyperf `hyperf/testing` 附带 |
+
+> MySQL 官方 APT 源的 GPG key 已过期（EXPKEYSIG / NO_PUBKEY B7B3B788A8D3785C），
+> 验证环境用了 `[trusted=yes]` + 官方源。只影响本机，不影响交付代码。
+
+### 结果
+
+**252 个测试 / 730 个断言全绿**（首次执行，此前从未跑过一条）。
+
+首次执行时是 **33 failures + 17 errors**。逐条回源码核实后全部处理，
+其中 **4 个是真生产 bug**，只有真跑才暴露得了。
+
+### 4 个真生产 bug
+
+#### P-1 依赖包名不存在 → 整个项目无法部署
+
+`composer.json` 里写的是 `hyperf/dotenv`。**Packagist 上没有这个包**
+（`p2/hyperf/dotenv.json` → 404），`composer install` 直接失败。
+
+这是我上一轮为修 `env()` 阻塞而**自己引入**的：当时只做了静态判断，没跑 install。
+正确包名是 `vlucas/phpdotenv`（hyperf 自己用的也是这个）。
+
+#### P-2 通知模板「配置完成度」恒为 false → 任何模板都绑不上策略
+
+`AlarmNotificationTemplate` 的 `$casts` 里**没有** `channels`，
+所以模型属性读出来是**原始 JSON 字符串**。而 `Presenter::normalizeChannels()` 
+直接 `(array) $channels`，字符串被当成单元素数组 → 读不到 `channel` 键
+→ PHP 8 抛 Undefined array key，值退化成 0 → `isUnconfigured()` 看到
+`channel=0`（不是回调）+ `receivers=[]` → **恒返回 true**。
+
+后果：用户把配好接收人的通知模板绑到策略上，会被 422 拒绝并提示
+「以下通知模板尚未配置接收人」。这是**每个用户必经的主路径**。
+
+#### P-3 ID 列表解析把 JSON 字符串变成 `[0]`
+
+`Presenter::intList('[8801,8802]')` 曾返回 `[0]`：
+`(array) '[8801,8802]'` = `['[8801,8802]']`，再 `intval('[8801,8802]')` = 0
+（字符串以 `[` 开头，没有数字前缀）。主路径靠 Model 的 `'array'` cast 侥幸没踩到，
+但任何 `Db::table()->select()` 或漏配 cast 的 Model 都会踩。
+
+#### P-4 中文名按字节截断 → 128 字只允许约 42 字
+
+`Text::truncateChars()` 用的是 `mb_strcut($s, 0, $maxChars)`，
+而 `mb_strcut` 的第三个参数是**字节宽度**，不是字符数
+（函数名里的 “cut” 就是「按显示宽度切」）。
+
+实测：`mb_strcut(str_repeat("告",200), 0, 123, "UTF-8")` → **41 字符 / 123 字节**。
+混排 `"ABC" + 100 个"告"` 切 5 字节时只得到 `"ABC"`，后面的字**静默丢失**。
+应为 `mb_substr`。
+
+`VARCHAR(128)` 与 `ck_policy_name_len` 都按字符计，
+所以这条让「中文策略名实际只能写 42 个字」，而 DB 允许 128 —— **应用层和存储层约束不一致**。
+
+### 5 类启动期致命错误（一条测试都跑不起来）
+
+| 位置 | 问题 |
+| --- | --- |
+| `config/autoload/aspects.php` | 返回 `['aspects' => []]`，但 Hyperf 要的是**扁平类名列表**。那个键被当成名叫 `aspects` 的切面类去反射 → `Class aspects not exist` |
+| `config/autoload/server.php` | 用 `env()` 却没 `use function Hyperf\Support\env;` → `Call to undefined function env()` |
+| 6 个 Model | 属性类型与父类不符：`$primaryKey/$keyType` 父类是**非空** `string`，子类写 `?string`；`$casts/$fillable` 父类是 `array`，子类无类型 |
+| `App\Model\Model` | `$dateFormat` 写成非空 `string`，父类是 `?string` |
+| 2 个测试文件 | 匿名类只实现 `ConfigInterface::get`，3.2 有 3 个方法；用匿名子类覆盖 `getCode()`（PHP 里是 `final`） |
+
+PHP 的属性类型规则比方法参数严格：**子类不能把父类的可空属性收窄成非空，
+也不能用无类型覆盖有类型的父属性**。这些全部是**类加载时**致命错误，
+症状统一表现为「一条测试都没跑」—— 极易被误读成环境问题。
+
+### 11 条测试自身写错（代码是对的，测试是错的）
+
+| 测试 | 错在哪 |
+| --- | --- |
+| `AlarmRuleTest` ×12 | `['sort'=>1] + validCondition() + ['threshold'=>X']` —— PHP 的 `+` **左边的键优先**，`validCondition()` 里已有 `threshold`，第三段是**空操作**。这批用例从来没测过它声称的东西 |
+| `MigrationSafetyTest` | 数据提供器写死旧文件名（少了 `_table` 后缀），6 条里 4 条指向不存在的文件 |
+| 同上 | `schema.sql` 路径少一层 `../`，**S-08 的守卫一直在空转** |
+| `AuthMiddlewareTest` | 正则用 `\s*` 会**吃掉换行**，跨行匹配到下一行的 `#`，把正确的空值配置判成「有预填值」 |
+| `PolicyPersistenceTest` | 契约 §0.4 规定 `extra.errors` 是**列表**，测试按 map 的 `assertArrayHasKey` 断言 |
+| 同上 | 源策略用 `status=1` 创建却直接删，与「已启用不可删除」自相矛盾 |
+| 同上 | 断言 `'[8801,8802]'` —— 那是 MySQL JSON 列的输出格式，与本项目无关 |
+| `AlarmRuleTest` | 断言截断结果以 ` - 副本` 结尾，但 `truncateChars` 不追加后缀（那是 `copyNameCandidates` 的职责） |
+
+### 守卫升级
+
+`MigrationSafetyTest` 的数据提供器改成**实扫目录**，新增/改名迁移不会再指向空气。
+`EnvBootstrapTest` 加了两条行为断言：`class_exists(Dotenv::class)`
+（挡住「包名写对但没装」）、以及**真的**往 `getenv()` 里灌一次值
+（挡住「换了不带 PutenvAdapter 的构造方式」）。
+`intList` 补了 12 个输入形态的 data provider，把 JSON 字符串这条真实形态钉死。
+
+### 迁移在真实 MySQL 上的结果
+
+`run-migrations.php` —— 8 个迁移 `up()` **全部成功**：
+
+| 表 | 列 | 索引 | CHECK | FK |
+| --- | --- | --- | --- | --- |
+| `alarm_policy` | 19 | 8 | 8 | 0 |
+| `alarm_policy_condition` | 15 | 4 | 6 | 1 |
+| `alarm_condition_template` | 10 | 4 | 4 | 0 |
+| `alarm_notification_template` | 9 | 4 | 3 | 0 |
+| `alarm_notification_receiver` | 6 | 4 | 1 | 1 |
+| `alarm_history` | 29 | 6 | 7 | 0 |
+
+- 6 表 / **29 CHECK** / 30 索引 / **2 FK** / **7 条预置模板** —— 与 schema 一致
+- **幂等性**：重跑 8 个迁移，模板数 7 → 7，无重复
+- **回滚**：000800 `down()` → 6 条，再 `up()` → 7 条
+- **FK 开关**：`try/finally` 生效，全局 `@@FOREIGN_KEY_CHECKS = 1`
+- **CHECK 真的在执行**：建带 CHECK 的探针表插越界值被拒
+  （8.0.16 以下会静默插进去，这正是版本硬下限的原因）
+
+### 运行期验证（`verify-runtime.php`，15 项全过）
+
+- CHECK 约束执行性
+- 字典 38 条 / CVM 15 WEB 9 CLB 5 MYSQL 9 / 唯一键无重复 / 每条 10 字段 / description 无反引号
+- `env()` 链路：`getenv(DB_DATABASE)` 与 `getenv(ALARM_AUTH_DISABLED)` 均读到值
+- 409 **六个**语义分支文案两两不同、都非空、code 都是 409
+- JSON 空值归一化：空值统一为真 `SQL NULL`，不是 `'[]'` / `'null'` 字符串
+
+### 仍未验证
+
+- **HTTP 层端到端**：19 个端点没走过真实请求。Swoole 已装、`bin/hyperf.php start` 可用，
+  但本轮未启动服务（需要 Redis，且起服务的价值低于直接验 Service 层）。
+- **告警引擎**：触发 / 去重 / 投递本项目只做管理面，不含引擎。
+- **10 个新指标的 `defaultThreshold`**：仍未经真实监控数据校准。
+
+VERDICT: PASS
