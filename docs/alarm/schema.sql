@@ -335,7 +335,7 @@ SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
 -- 预置数据（幂等：可重复执行）
--- 与 metrics.md §3 的 6 条预置触发条件模板严格一一对应。
+-- 与 metrics.md §3 的 7 条预置触发条件模板严格一一对应。
 -- creator_id=0 / creator_name='system' 表示系统预置。
 -- =============================================================================
 
@@ -349,7 +349,7 @@ INSERT IGNORE INTO `alarm_notification_template`
   ('系统预置-回调通知', '系统内置，通过公网回调地址推送告警，需填写 callbackUrl',
    '[{"channel":5,"receivers":[],"callbackUrl":"https://example.com/alarm/callback","silenceTime":0}]', 1, 0, 'system');
 
--- --- 6 条预置触发条件模板（is_preset=1，不可删除，可修改） --------------------
+-- --- 7 条预置触发条件模板（is_preset=1，不可删除，可修改） --------------------
 INSERT IGNORE INTO `alarm_condition_template`
   (`name`, `remark`, `policy_type`, `conditions`, `is_preset`, `creator_id`, `creator_name`) VALUES
   ('CPU 持续过高',
@@ -381,4 +381,13 @@ INSERT IGNORE INTO `alarm_condition_template`
    'MySQL 专用。只读实例复制延迟连续 2 个 1 分钟周期超过 30 秒触发紧急告警，通常指向大事务或主库 IO 瓶颈。',
    4,
    '[{"sort":1,"metricNamespace":"MYSQL","metricName":"MysqlReplicationDelay","operator":">","threshold":30,"period":1,"continuity":2,"level":1,"frequency":30}]',
+   1, 0, 'system'),
+  -- 第 7 条（2026-10-04 新增）。与迁移 2026_10_04_000800 内容必须逐字一致。
+  -- 唯一使用 `<` 算子的预置模板：HttpRequestCount 的默认算子是 `>`，只能发现「QPS 冲到一万」，
+  -- 发现不了「QPS 归零」。而 QPS=0 时 HttpSuccessRate 的分母也是 0（部分实现返回 100%），
+  -- 靠它兜底不可靠。详见 docs/alarm/metrics-gap-analysis.md §1 A-1。
+  ('流量断流',
+   '通用 Web 服务专用。QPS 连续 2 个 1 分钟周期低于 1 触发紧急告警。用于捕获「进程存活、健康检查通过，但一个请求都处理不了」的断流故障——这类故障无法被 HttpRequestCount 的正向阈值（> 10000）发现。低峰期为空的内部系统请勿使用，应改用同比/环比判据（v1.1 立项）。',
+   1,
+   '[{"sort":1,"metricNamespace":"WEB","metricName":"HttpRequestCount","operator":"<","threshold":1,"period":1,"continuity":2,"level":1,"frequency":15}]',
    1, 0, 'system');

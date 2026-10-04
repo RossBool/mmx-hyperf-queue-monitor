@@ -170,3 +170,94 @@ describe('s-02 回归：策略向导必须能响应式地推进', () => {
     ).toBe(1)
   })
 })
+
+/**
+ * S-14 存量兼容路径的**真组件**回归。
+ *
+ * ## 为什么不复用 `monitor-type-selectable.test.ts` 里那份
+ *
+ * 那份测试的 docblock 自己写着「复刻 policy-form.vue 里 monitorTypeOptions 的计算逻辑」——
+ * 复刻件**可以和生产代码一起错**。对抗复核里我自己挂载真组件验证过产品行为是对的，
+ * 但那次测试写在 /tmp 没进仓，等于仓里对这条路径零真组件覆盖。
+ * 本块把同样的断言落在**真的 policy-form.vue** 上。
+ *
+ * ## 这里守的是什么
+ *
+ * 数据库层没有 CHECK 强制 monitorType ∈ 1..5，所以 monitorType=3/4/5 的存量数据
+ * 确实可能存在。编辑这类策略时：
+ *   - 选项里必须**看得到**当前值（否则 Reka Select 找不到匹配 item，
+ *     trigger 回退显示 placeholder，真实值在用户眼前凭空消失）；
+ *   - 必须**标注不可选**，让用户知道为什么选不了它；
+ *   - 选中后 form.monitorType 要**原样回填**，不能被静默改成别的值。
+ */
+describe('s-14 回归：存量 monitorType=3/4/5 必须可见、可标注、可回填', () => {
+  const LEGACY = [
+    { value: 3, label: '前端性能监控' },
+    { value: 4, label: '云拨测' },
+    { value: 5, label: '终端性能监控' },
+  ] as const
+
+  for (const { value, label } of LEGACY) {
+    it(`monitorType=${value} 时选项含「${label}（v1.0 不可选）」且不吞掉当前值`, async () => {
+      const wrapper = mountForm()
+      await nextTick()
+      const ss = setupStateOf(wrapper) as unknown as {
+        setValue: (k: string, v: unknown) => void
+        monitorTypeOptions: { value: number, label: string }[]
+      }
+
+      ss.setValue('monitorType', value)
+      await nextTick()
+
+      const opts = ss.monitorTypeOptions
+      const values = opts.map(o => o.value)
+      const labels = opts.map(o => o.label)
+
+      expect(values, `monitorType=${value} 应出现在选项里，否则编辑存量策略时显示不出真实值`).toContain(value)
+      expect(
+        labels.find(l => l.includes(label)),
+        `应有「${label}（v1.0 不可选）」这样一项，注明为什么选不了`,
+      ).toBeTruthy()
+
+      // 不可选 ≠ 唯一：1/2 仍必须可选，否则新建路径也一起坏掉
+      expect(values, '云产品/应用性能监控在任何状态下都应可选').toEqual(expect.arrayContaining([1, 2]))
+
+      // 回填必须原样，不能被静默改写
+      const after = (ss as unknown as { currentValues: () => Record<string, unknown> }).currentValues()
+      expect(after.monitorType, '回填后 monitorType 必须保持原值').toBe(value)
+    })
+  }
+
+  it('新建态（无存量值）不得出现 3/4/5 —— 这是死胡同修复的核心', async () => {
+    const wrapper = mountForm()
+    await nextTick()
+    const ss = setupStateOf(wrapper) as unknown as {
+      monitorTypeOptions: { value: number }[]
+    }
+
+    const values = ss.monitorTypeOptions.map(o => o.value)
+    expect(values, '向导不该提供用户选了就走不完的选项').not.toContain(3)
+    expect(values).not.toContain(4)
+    expect(values).not.toContain(5)
+    expect(values, '新建态应恰好是 1 和 2').toEqual([1, 2])
+  })
+
+  it('存量 monitorType=3 时策略类型为空，页面要说明原因而不是静默', async () => {
+    const wrapper = mountForm()
+    await nextTick()
+    const ss = setupStateOf(wrapper) as unknown as {
+      setValue: (k: string, v: unknown) => void
+      policyTypeOptions: unknown[]
+    }
+
+    ss.setValue('monitorType', 3)
+    await nextTick()
+
+    expect(ss.policyTypeOptions, 'monitorType=3 在 v1.0 没有可用策略类型').toHaveLength(0)
+    // 步骤容器用 v-show，DOM 一直在，所以这段提示对所有步骤都存在
+    expect(
+      wrapper.html(),
+      '应出现「该监控类型在 v1.0 暂无可用策略类型」提示，让用户知道为什么走不下去',
+    ).toContain('该监控类型在 v1.0 暂无可用策略类型')
+  })
+})
