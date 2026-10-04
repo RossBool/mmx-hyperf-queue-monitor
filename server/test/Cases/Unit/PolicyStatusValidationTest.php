@@ -28,6 +28,7 @@ declare(strict_types=1);
 namespace Tests\Cases\Unit;
 
 use App\Service\AlarmPolicyService;
+use PHPUnit\Framework\Attributes\DataProvider;
 use App\Support\Validator;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
@@ -119,9 +120,7 @@ final class PolicyStatusValidationTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider invalidValueProvider
-     */
+    #[DataProvider('invalidValueProvider')]
     public function testInvalidValuesAreRejected(mixed $raw): void
     {
         [$status, $errors] = $this->assertStatus($raw, true);
