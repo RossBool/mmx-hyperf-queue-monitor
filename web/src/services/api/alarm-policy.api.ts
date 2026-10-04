@@ -156,7 +156,7 @@ export async function copyAlarmPolicy(id: number) {
 // ---------------------------------------------------------------------------
 // ⑧ GET /api/alarm/metrics 指标字典
 //
-// **不分页**，固定 28 条，唯一来源 `metrics.md` §1。指标选择器的数据源就是它，
+// **不分页**，固定 38 条，唯一来源 `metrics.md` §1。指标选择器的数据源就是它，
 // 选定后用 `defaultOperator / defaultThreshold / suggestedContinuity / periodOptions` 预填条件表单。
 // ---------------------------------------------------------------------------
 

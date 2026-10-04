@@ -733,7 +733,7 @@ export interface AlarmHistory {
 // ---------------------------------------------------------------------------
 // §2.7 AlarmMetric 指标字典条目
 //
-// 内容唯一来源是 `metrics.md` §1（共 28 个指标），**不在前端硬编码**，
+// 内容唯一来源是 `metrics.md` §1（共 38 个指标），**不在前端硬编码**，
 // 运行时从 `GET /api/alarm/metrics` 拉取。
 // ---------------------------------------------------------------------------
 
@@ -887,7 +887,7 @@ export interface AlarmPolicyCopyResult {
 // 指标与模板（⑧-⑯）
 // ---------------------------------------------------------------------------
 
-/** ⑧ `GET /api/alarm/metrics` 查询参数。响应 `data` 是 `AlarmMetric[]`（**不分页**，固定 28 条）。 */
+/** ⑧ `GET /api/alarm/metrics` 查询参数。响应 `data` 是 `AlarmMetric[]`（**不分页**，固定 38 条）。 */
 export interface AlarmMetricListQuery {
   /** 按策略类型过滤，只返回 `policyType[]` 包含该值的指标 */
   policyType?: AlarmPolicyType
