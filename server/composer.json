@@ -2,10 +2,14 @@
     "name": "app/alarm-server",
     "type": "project",
     "description": "告警管理后端 (Hyperf v3.2 + MySQL 8.0)，实现 /api/alarm 19 个端点",
-    "keywords": ["php", "swoole", "hyperf", "alarm"],
+    "keywords": [
+        "php",
+        "swoole",
+        "hyperf",
+        "alarm"
+    ],
     "license": "Apache-2.0",
     "require": {
-        "php": ">=8.2",
         "ext-json": "*",
         "ext-pdo": "*",
         "ext-pdo_mysql": "*",
@@ -17,6 +21,7 @@
         "hyperf/database": "^3.2",
         "hyperf/db-connection": "^3.2",
         "hyperf/di": "^3.2",
+        "hyperf/dotenv": "^3.2",
         "hyperf/engine": "^2.10",
         "hyperf/exception-handler": "^3.2",
         "hyperf/framework": "^3.2",
@@ -27,6 +32,7 @@
         "hyperf/paginator": "^3.2",
         "hyperf/process": "^3.2",
         "hyperf/validation": "^3.2",
+        "php": ">=8.2",
         "psr/clock": "^1.0"
     },
     "require-dev": {

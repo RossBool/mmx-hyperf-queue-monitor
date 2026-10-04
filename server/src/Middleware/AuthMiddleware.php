@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Middleware;
 
 use App\Exception\BusinessException;
+use Hyperf\Contract\StdoutLoggerInterface;
 use Hyperf\HttpServer\Contract\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -25,6 +26,10 @@ use function Hyperf\Support\env;
  */
 class AuthMiddleware implements MiddlewareInterface
 {
+    public function __construct(private readonly StdoutLoggerInterface $logger)
+    {
+    }
+
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $this->authenticate($request);
@@ -48,11 +53,27 @@ class AuthMiddleware implements MiddlewareInterface
 
     private function isValid(string $token): bool
     {
-        $allow = (string) env('ALARM_STATIC_TOKENS', '');
-        if ($allow === '') {
-            // 未配置白名单时不做拒绝（本地联调），生产必须配置 ALARM_STATIC_TOKENS
+        // 显式关闭鉴权：仅供本地联调。必须是**主动设置**的开关，
+        // 不会因为「忘配白名单」而意外生效。
+        if (filter_var(env('ALARM_AUTH_DISABLED', false), FILTER_VALIDATE_BOOLEAN)) {
+            $this->logger->warning('ALARM_AUTH_DISABLED=true，鉴权已被显式关闭 —— 生产环境禁止设置该变量');
+
             return true;
         }
+
+        $allow = trim((string) env('ALARM_STATIC_TOKENS', ''));
+        if ($allow === '') {
+            // fail-closed：白名单未配置时**拒绝**，而不是放行。
+            // 旧实现是 fail-open —— 漏配 ALARM_STATIC_TOKENS ＝ 全部告警接口无鉴权，
+            // 且没有任何错误信号。安全默认值必须反过来。
+            $this->logger->error(
+                'ALARM_STATIC_TOKENS 未配置，已拒绝请求（fail-closed）。'
+                . '请配置白名单；仅本地联调可设置 ALARM_AUTH_DISABLED=true 显式跳过鉴权。',
+            );
+
+            return false;
+        }
+
         return in_array($token, array_map('trim', explode(',', $allow)), true);
     }
 }
