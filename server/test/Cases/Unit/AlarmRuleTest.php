@@ -612,11 +612,11 @@ class AlarmRuleTest extends TestCase
 
     // ------------------------------------------------------------ 指标字典自检
 
-    public function testMetricDictionaryHasTwentyEightEntries(): void
+    public function testMetricDictionaryHasThirtyEightEntries(): void
     {
         $all = $this->dictionary()->all();
 
-        $this->assertCount(28, $all);
+        $this->assertCount(38, $all);
         $this->assertSame('CPU 使用率', $this->dictionary()->find('CVM', 'CpuUtilizationRate')['metricNameCn']);
     }
 
@@ -631,10 +631,29 @@ class AlarmRuleTest extends TestCase
     {
         $dictionary = $this->dictionary();
 
-        $this->assertCount(8, $dictionary->filter(1, null, null));   // WEB 8
-        $this->assertCount(4, $dictionary->filter(3, null, null));   // CLB 4
+        // 38 条 = CVM 15 / WEB 9 / CLB 5 / MYSQL 9（第一性原理扩充 10 条后）
+        $this->assertCount(9, $dictionary->filter(1, null, null));    // WEB
+        $this->assertCount(5, $dictionary->filter(3, null, null));    // CLB
+        $this->assertCount(9, $dictionary->filter(4, null, null));    // MYSQL
         $this->assertCount(1, $dictionary->filter(null, 'CVM', 'CPU 使用率'));
-        $this->assertCount(10, $dictionary->filter(2, 'CVM', null));
+        $this->assertCount(15, $dictionary->filter(2, 'CVM', null));
+    }
+
+    /**
+     * 4 个 namespace 的条数必须同时成立：加任何一条指标、删任何一条指标，这里都会红。
+     *
+     * 之前 MYSQL 完全没有条数断言（只有 WEB/CLB/CVM 三条），
+     * 扩充指标时 MYSQL 少一条都发现不了 —— 这里补上。
+     */
+    public function testMetricNamespaceCounts(): void
+    {
+        $counts = ['CVM' => 0, 'WEB' => 0, 'CLB' => 0, 'MYSQL' => 0];
+        foreach ($this->dictionary()->all() as $metric) {
+            $this->assertArrayHasKey($metric['namespace'], $counts, $metric['metricName'] . ' 的 namespace 非法');
+            ++$counts[$metric['namespace']];
+        }
+
+        $this->assertSame(['CVM' => 15, 'WEB' => 9, 'CLB' => 5, 'MYSQL' => 9], $counts);
     }
 
     // ------------------------------------------------------------ monitorType / policyType 联动
