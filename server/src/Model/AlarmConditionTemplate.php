@@ -11,19 +11,19 @@ class AlarmConditionTemplate extends Model
 {
     protected ?string $table = 'alarm_condition_template';
 
-    protected ?string $primaryKey = 'id';
+    protected string $primaryKey = 'id';
 
-    protected ?string $keyType = 'int';
+    protected string $keyType = 'int';
 
     protected ?string $connection = 'default';
 
-    public $timestamps = true;
+    public bool $timestamps = true;
 
-    protected $fillable = [
+    protected array $fillable = [
         'name', 'remark', 'policy_type', 'conditions', 'is_preset', 'creator_id', 'creator_name',
     ];
 
-    protected $casts = [
+    protected array $casts = [
         'id' => 'int',
         'policy_type' => 'int',
         'is_preset' => 'int',

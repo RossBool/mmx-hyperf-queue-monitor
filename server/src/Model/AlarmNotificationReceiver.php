@@ -12,17 +12,17 @@ class AlarmNotificationReceiver extends Model
 {
     protected ?string $table = 'alarm_notification_receiver';
 
-    protected ?string $primaryKey = 'id';
+    protected string $primaryKey = 'id';
 
-    protected ?string $keyType = 'int';
+    protected string $keyType = 'int';
 
     protected ?string $connection = 'default';
 
-    public $timestamps = true;
+    public bool $timestamps = true;
 
-    protected $fillable = ['template_id', 'channel', 'contact'];
+    protected array $fillable = ['template_id', 'channel', 'contact'];
 
-    protected $casts = [
+    protected array $casts = [
         'id' => 'int',
         'template_id' => 'int',
         'channel' => 'int',

@@ -20,27 +20,27 @@ class AlarmPolicy extends Model
 {
     protected ?string $table = 'alarm_policy';
 
-    protected ?string $primaryKey = 'id';
+    protected string $primaryKey = 'id';
 
     public bool $incrementing = true;
 
-    protected ?string $keyType = 'int';
+    protected string $keyType = 'int';
 
     protected ?string $connection = 'default';
 
-    public $timestamps = true;
+    public bool $timestamps = true;
 
     protected ?string $createdAt = 'created_at';
 
     protected ?string $updatedAt = 'updated_at';
 
-    protected $fillable = [
+    protected array $fillable = [
         'name', 'remark', 'monitor_type', 'policy_type', 'status', 'level', 'project_id',
         'object_type', 'object_ids', 'object_group_ids', 'object_filters', 'condition_logic',
         'notification_template_ids', 'condition_template_id', 'creator_id', 'creator_name',
     ];
 
-    protected $casts = [
+    protected array $casts = [
         'id' => 'int',
         'monitor_type' => 'int',
         'policy_type' => 'int',

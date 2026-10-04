@@ -12,19 +12,19 @@ class AlarmNotificationTemplate extends Model
 {
     protected ?string $table = 'alarm_notification_template';
 
-    protected ?string $primaryKey = 'id';
+    protected string $primaryKey = 'id';
 
-    protected ?string $keyType = 'int';
+    protected string $keyType = 'int';
 
     protected ?string $connection = 'default';
 
-    public $timestamps = true;
+    public bool $timestamps = true;
 
-    protected $fillable = [
+    protected array $fillable = [
         'name', 'remark', 'channels', 'is_preset', 'creator_id', 'creator_name',
     ];
 
-    protected $casts = [
+    protected array $casts = [
         'id' => 'int',
         'is_preset' => 'int',
         'creator_id' => 'int',

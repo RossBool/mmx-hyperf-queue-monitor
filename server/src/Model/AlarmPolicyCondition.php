@@ -12,20 +12,20 @@ class AlarmPolicyCondition extends Model
 {
     protected ?string $table = 'alarm_policy_condition';
 
-    protected ?string $primaryKey = 'id';
+    protected string $primaryKey = 'id';
 
-    protected ?string $keyType = 'int';
+    protected string $keyType = 'int';
 
     protected ?string $connection = 'default';
 
-    public $timestamps = true;
+    public bool $timestamps = true;
 
-    protected $fillable = [
+    protected array $fillable = [
         'policy_id', 'sort', 'metric_namespace', 'metric_name', 'metric_name_cn',
         'unit', 'operator', 'threshold', 'period', 'continuity', 'level', 'frequency',
     ];
 
-    protected $casts = [
+    protected array $casts = [
         'id' => 'int',
         'policy_id' => 'int',
         'sort' => 'int',
