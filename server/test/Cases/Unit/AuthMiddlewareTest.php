@@ -213,8 +213,14 @@ final class AuthMiddlewareTest extends TestCase
         );
 
         // 兜底：整份文件里不允许出现任何看起来像 token 的预填值
+        //
+        // ⚠️ 这里必须用 `[ \t]*` 而不是 `\s*`：
+        //    `\s` 包含换行，所以 `\s*=\s*\S` 会把 `ALARM_STATIC_TOKENS=` 行尾的
+        //    换行一起吃掉，再去匹配**下一行**的第一个非空白字符（`#`），
+        //    于是一份完全正确的空值 .env.example 也会被判成「有预填值」。
+        //    这个假失败是本文件写完从未运行过的直接后果。
         self::assertDoesNotMatchRegularExpression(
-            '/^ALARM_STATIC_TOKENS\s*=\s*\S/m',
+            '/^ALARM_STATIC_TOKENS[ \t]*=[ \t]*\S/m',
             $src,
             '.env.example 的 ALARM_STATIC_TOKENS 后面跟了非空值（D-4 回归）。'
         );

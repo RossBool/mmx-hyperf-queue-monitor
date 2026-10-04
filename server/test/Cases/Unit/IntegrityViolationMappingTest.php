@@ -39,19 +39,18 @@ final class IntegrityViolationMappingTest extends TestCase
      */
     private function dbError(int $errno, string $sqlstate, string $message = "db error"): \PDOException
     {
-        // PDOException::getCode() 是只读的，用匿名子类把它设成 MySQL errno
-        return new class($errno, $sqlstate, $message) extends \PDOException {
-            public function __construct(private int $errno, string $sqlstate, string $message)
-            {
-                parent::__construct($message, 0);
-                $this->errorInfo = [$sqlstate, (string) $errno, $message];
-            }
-
-            public function getCode(): int
-            {
-                return $this->errno;
-            }
-        };
+        // ⚠️ 不能用「匿名子类覆盖 getCode()」来造 errno ——
+        //    `Exception::getCode()` 在 PHP 里是 **final**，覆盖它会直接致命错误：
+        //      Cannot override final method Exception::getCode()
+        //    这条错误发生在**类加载时**，表现为「一个测试都没跑」。
+        //
+        // 正确做法：PDOException 构造函数第二个参数就是 code，
+        // 实测 `new PDOException($msg, 1062)->getCode() === 1062`；
+        // `$errorInfo` 是 public 属性，实测可写。
+        // 生产代码 `driverErrorCodes()` 读的就是这两个来源。
+        $e = new \PDOException($message, $errno);
+        $e->errorInfo = [$sqlstate, (string) $errno, $message];
+        return $e;
     }
 
     /** @return array{0: int, 1: string} [bizCode, message] */
@@ -118,9 +117,7 @@ final class IntegrityViolationMappingTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider payloadErrnoProvider
-     */
+    #[DataProvider('payloadErrnoProvider')]
     public function testPayloadViolationsReport422(int $errno, string $sqlstate): void
     {
         [$code] = $this->resolve($this->dbError($errno, $sqlstate));
@@ -148,7 +145,8 @@ final class IntegrityViolationMappingTest extends TestCase
      * 首版修复写的是 `errno >= 1000` 的范围判断，会把下面三条全扫成 422 ——
      * 那是把部署问题和基础设施故障报成「参数校验失败」，运维会查错方向。
      *
-     * @dataProvider serverFaultProvider
+     * 元数据用 `#[DataProvider]` 属性声明：PHPUnit 12 起不再支持 doc-comment 里的
+     * `@dataProvider`，留着会同时被识别两次。
      */
     #[DataProvider('serverFaultProvider')]
     public function testServerFaultsStayInternalError(int $errno, string $sqlstate): void

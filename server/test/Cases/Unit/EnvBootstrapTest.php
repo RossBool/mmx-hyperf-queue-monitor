@@ -50,12 +50,70 @@ final class EnvBootstrapTest extends TestCase
             $composer,
             'composer.json 解析失败或缺 require 段。'
         );
+        // ⚠️ 包名是 `vlucas/phpdotenv`，**不是** `hyperf/dotenv` ——
+        //    Packagist 上**不存在** `hyperf/dotenv`（实测 p2/hyperf/dotenv.json → 404）。
+        //    写错包名的后果不是「env() 没数据源」这么温和：`composer install` 直接失败，
+        //    整个项目无法部署 —— 而这个错误只有真跑一次 install 才会暴露。
+        //    hyperf 自己在 composer.json 里用的也是 `vlucas/phpdotenv: ^5.0`。
         self::assertArrayHasKey(
+            'vlucas/phpdotenv',
+            $composer['require'],
+            'composer.json 必须 require vlucas/phpdotenv —— Packagist 上没有 hyperf/dotenv，'
+                . '写那个名字会让 composer install 整体失败。'
+        );
+        self::assertArrayNotHasKey(
             'hyperf/dotenv',
             $composer['require'],
-            'composer.json 必须 require hyperf/dotenv —— 否则没有任何东西能把 .env '
-                . '读进 $_ENV/$_SERVER，env() 恒返回默认值。'
+            'hyperf/dotenv 在 Packagist 上不存在，必须改用 vlucas/phpdotenv。'
         );
+    }
+
+    /**
+     * 光断言 composer.json 里有包名不够 —— 那只证明字符串写对了，
+     * 不证明**依赖真装上了、类真能加载**。
+     *
+     * 真实失败模式有两种：包名写对但没跑 install（vendor 里没有），
+     * 或者包装了但当前 PHP 版本上 `Dotenv` 类不存在。
+     * 只有 `class_exists` 能同时挡住这两种。
+     */
+    public function testDotenvClassIsActuallyLoadable(): void
+    {
+        self::assertTrue(
+            class_exists(\Dotenv\Dotenv::class),
+            'vlucas/phpdotenv 没装上或 Dotenv 类不可用 —— 先跑 `composer install`。'
+        );
+    }
+
+    /**
+     * 端到端：bootstrap 真的把 .env 灌进了 `getenv()`。
+     *
+     * 本条是本文件的核心价值。`Hyperf\Support\env()` 的实现是 `getenv($key)`，
+     * 而 `Dotenv::createUnsafeImmutable()` 默认带 `PutenvAdapter`，
+     * 所以 getenv / $_ENV / $_SERVER 三条路径都应该读得到。
+     * 哪天换成不注册 PutenvAdapter 的构造方式，只有这条测试能发现。
+     */
+    public function testBootstrapActuallyPopulatesGetenv(): void
+    {
+        $dir = sys_get_temp_dir() . '/alarm-env-probe-' . bin2hex(random_bytes(4));
+        mkdir($dir);
+        file_put_contents($dir . '/.env', "ALARM_ENV_PROBE=probe_value_123\n");
+
+        try {
+            \Dotenv\Dotenv::createUnsafeImmutable($dir)->safeLoad();
+            self::assertSame(
+                'probe_value_123',
+                getenv('ALARM_ENV_PROBE'),
+                'createUnsafeImmutable 之后 getenv() 读不到 —— env() 正是走 getenv()，'
+                    . '这会让白名单/DB 配置恒为默认值。'
+            );
+            self::assertSame('probe_value_123', $_ENV['ALARM_ENV_PROBE'] ?? null);
+            self::assertSame('probe_value_123', $_SERVER['ALARM_ENV_PROBE'] ?? null);
+        } finally {
+            putenv('ALARM_ENV_PROBE');
+            unset($_ENV['ALARM_ENV_PROBE'], $_SERVER['ALARM_ENV_PROBE']);
+            @unlink($dir . '/.env');
+            @rmdir($dir);
+        }
     }
 
     public function testBootstrapFileExistsAndLoadsDotenv(): void

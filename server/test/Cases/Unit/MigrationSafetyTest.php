@@ -31,18 +31,27 @@ final class MigrationSafetyTest extends TestCase
     private const MIGRATION_DIR = __DIR__ . '/../../../migrations';
 
     /**
-     * 6 个建表迁移。seed 迁移（000700）不建表，不受这两条约束。
+     * 6 个建表迁移。seed 迁移（000700 / 000800）不建表，不受这两条约束。
+     *
+     * ⚠️ 这里**从目录实扫**，不写死文件名。
+     * 写死的版本用的是 `..._create_alarm_condition_template.php`，
+     * 而磁盘上的实际文件名带 `_table` 后缀
+     * （`..._create_alarm_condition_template_table.php`）——
+     * 6 条断言里有 4 条指向不存在的文件，**全部报「file does not exist」**。
+     * 实扫之后新增/改名迁移不会再让这个测试无声地指向空气。
      */
     public static function createTableMigrationProvider(): array
     {
-        return [
-            'alarm_policy' => ['2026_09_30_000100_create_alarm_policy_table.php'],
-            'alarm_policy_condition' => ['2026_09_30_000200_create_alarm_policy_condition_table.php'],
-            'alarm_condition_template' => ['2026_09_30_000300_create_alarm_condition_template.php'],
-            'alarm_notification_template' => ['2026_09_30_000400_create_alarm_notification_template.php'],
-            'alarm_notification_receiver' => ['2026_09_30_000500_create_alarm_notification_receiver.php'],
-            'alarm_history' => ['2026_09_30_000600_create_alarm_history_table.php'],
-        ];
+        $files = glob(self::MIGRATION_DIR . '/*_create_*.php') ?: [];
+        sort($files);
+        self::assertNotEmpty($files, 'migrations 目录下没扫到建表迁移');
+
+        $out = [];
+        foreach ($files as $path) {
+            $out[basename($path, '.php')] = [basename($path)];
+        }
+
+        return $out;
     }
 
     private static function upBody(string $file): string
@@ -145,7 +154,11 @@ final class MigrationSafetyTest extends TestCase
      */
     public function testSchemaDeclaresMinimumMysqlVersion(): void
     {
-        $path = __DIR__ . '/../../../docs/alarm/schema.sql';
+        // ⚠️ 四层 `../` 不是笔误：从 `server/test/Cases/Unit/` 往上 3 层只到 `server/`，
+        //    而 schema.sql 在**仓库根**的 `docs/` 下，与 `server/` 平级。
+        //    原来写的是 3 层 → 指向 `server/docs/alarm/schema.sql`（不存在），
+        //    这条断言从来没读到过文件内容，等于**S-08 的守卫一直是空转**。
+        $path = __DIR__ . '/../../../../docs/alarm/schema.sql';
         self::assertFileExists($path);
 
         $src = (string) file_get_contents($path);

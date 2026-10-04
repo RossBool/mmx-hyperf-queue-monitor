@@ -29,6 +29,12 @@ class AlarmRuleTest extends TestCase
     private function dictionary(): MetricDictionary
     {
         // 指标字典来自 config/autoload/metrics.php（metrics.md 的机器可读副本）
+        //
+        // ⚠️ ConfigInterface 在 hyperf/contract 3.2 里有 **3 个**方法：
+        //    get / has / set。只实现 get 会在**类加载时**致命错误：
+        //      Class ...@anonymous contains 2 abstract methods and must therefore
+        //      be declared abstract or implement the remaining methods
+        //    这条错误发生在 PHPUnit 收集阶段，表现为「一个测试都没跑」。
         $config = new class() implements ConfigInterface {
             public function get(string $key, mixed $default = null): mixed
             {
@@ -36,6 +42,16 @@ class AlarmRuleTest extends TestCase
                     return $default;
                 }
                 return require BASE_PATH . '/config/autoload/metrics.php';
+            }
+
+            public function has(string $keys): bool
+            {
+                return $keys === 'metrics';
+            }
+
+            public function set(string $key, mixed $value): void
+            {
+                // 测试只读，不需要写
             }
         };
 
@@ -94,7 +110,7 @@ class AlarmRuleTest extends TestCase
     {
         $errors = new Validator();
         $this->conditions()->validate([
-            ['sort' => 1] + $this->validCondition(),
+            array_merge(['sort' => 1], $this->validCondition()),
             ['sort' => 3] + $this->validCondition(),   // 跳号
         ], 2, $errors);
 
@@ -105,8 +121,8 @@ class AlarmRuleTest extends TestCase
     {
         $errors = new Validator();
         $this->conditions()->validate([
-            ['sort' => 1] + $this->validCondition(),
-            ['sort' => 1] + $this->validCondition(),   // 重复
+            array_merge(['sort' => 1], $this->validCondition()),
+            array_merge(['sort' => 1], $this->validCondition()),   // 重复
         ], 2, $errors);
 
         $this->assertFalse($errors->passes());
@@ -118,7 +134,7 @@ class AlarmRuleTest extends TestCase
     {
         $errors = new Validator();
         $result = $this->conditions()->validate(
-            [['sort' => 1] + $this->validCondition() + ['threshold' => -12.3456]],
+            [array_merge(['sort' => 1], $this->validCondition(), ['threshold' => -12.3456])],
             2,
             $errors
         );
@@ -131,7 +147,7 @@ class AlarmRuleTest extends TestCase
     {
         $errors = new Validator();
         $this->conditions()->validate(
-            [['sort' => 1] + $this->validCondition() + ['threshold' => 1.234567]],
+            [array_merge(['sort' => 1], $this->validCondition(), ['threshold' => 1.234567])],
             2,
             $errors
         );
@@ -143,7 +159,7 @@ class AlarmRuleTest extends TestCase
     {
         $errors = new Validator();
         $this->conditions()->validate(
-            [['sort' => 1] + $this->validCondition() + ['threshold' => 'abc']],
+            [array_merge(['sort' => 1], $this->validCondition(), ['threshold' => 'abc'])],
             2,
             $errors
         );
@@ -157,7 +173,7 @@ class AlarmRuleTest extends TestCase
     public function testContinuityRange(int $value, bool $valid): void
     {
         $errors = new Validator();
-        $this->conditions()->validate([['sort' => 1] + $this->validCondition() + ['continuity' => $value]], 2, $errors);
+        $this->conditions()->validate([array_merge(['sort' => 1], $this->validCondition(), ['continuity' => $value])], 2, $errors);
 
         $this->assertSame($valid, ! array_key_exists('conditions.0.continuity', $errors->errors()));
     }
@@ -190,7 +206,7 @@ class AlarmRuleTest extends TestCase
     public function testPeriodNotInGlobalEnumIsRejected(): void
     {
         $errors = new Validator();
-        $this->conditions()->validate([['sort' => 1] + $this->validCondition() + ['period' => 3]], 2, $errors);
+        $this->conditions()->validate([array_merge(['sort' => 1], $this->validCondition(), ['period' => 3])], 2, $errors);
 
         $this->assertArrayHasKey('conditions.0.period', $errors->errors());
     }
@@ -199,7 +215,7 @@ class AlarmRuleTest extends TestCase
     public function testOperatorEnum(string $operator, bool $valid): void
     {
         $errors = new Validator();
-        $this->conditions()->validate([['sort' => 1] + $this->validCondition() + ['operator' => $operator]], 2, $errors);
+        $this->conditions()->validate([array_merge(['sort' => 1], $this->validCondition(), ['operator' => $operator])], 2, $errors);
 
         $this->assertSame($valid, ! array_key_exists('conditions.0.operator', $errors->errors()));
     }
@@ -213,7 +229,7 @@ class AlarmRuleTest extends TestCase
     public function testFrequencyEnum(int $value, bool $valid): void
     {
         $errors = new Validator();
-        $this->conditions()->validate([['sort' => 1] + $this->validCondition() + ['frequency' => $value]], 2, $errors);
+        $this->conditions()->validate([array_merge(['sort' => 1], $this->validCondition(), ['frequency' => $value])], 2, $errors);
 
         $this->assertSame($valid, ! array_key_exists('conditions.0.frequency', $errors->errors()));
     }
@@ -251,7 +267,7 @@ class AlarmRuleTest extends TestCase
     {
         $errors = new Validator();
         $this->conditions()->validate([
-            ['sort' => 1] + $this->validCondition() + ['metricName' => 'NoSuchMetric'],
+            array_merge(['sort' => 1], $this->validCondition(), ['metricName' => 'NoSuchMetric']),
         ], 2, $errors);
 
         $this->assertArrayHasKey('conditions.0.metricName', $errors->errors());
@@ -263,7 +279,7 @@ class AlarmRuleTest extends TestCase
     {
         $errors = new Validator();
         $result = $this->conditions()->validate([
-            ['sort' => 1] + $this->validCondition() + ['metricNameCn' => '前端乱填', 'unit' => 'X'],
+            array_merge(['sort' => 1], $this->validCondition(), ['metricNameCn' => '前端乱填', 'unit' => 'X']),
         ], 2, $errors);
 
         $this->assertTrue($errors->passes());
@@ -530,10 +546,60 @@ class AlarmRuleTest extends TestCase
         $this->assertSame([3, 5], \App\Support\Presenter::intList('[3,5]'));
     }
 
+    /**
+     * 真实 bug 回归：`intList('[8801,8802]')` 曾返回 `[0]`。
+     *
+     * 旧实现 `array_map('intval', array_values((array) $value))` 遇到 JSON 字符串时
+     * 先 `(array)` 成 `['[8801,8802]']`，再 `intval('[8801,8802]')` —— 字符串以 `[`
+     * 开头没有数字前缀，PHP 直接给 **0**。
+     * 于是 `notificationTemplateIds` 变成 `[0]`，
+     * `notificationTemplateSummaries([0])` 去查一个不存在的模板 id。
+     *
+     * 主路径靠 Model 的 `'array'` cast 侥幸没踩到，
+     * 但任何 `Db::table()->select()` 或漏配 cast 的 Model 都会踩。
+     * 所以这里逐个输入形态都钉死，不只测「有 cast 的那条路」。
+     */
+    #[DataProvider('intListInputProvider')]
+    public function testIntListHandlesEveryInputShape(mixed $input, array $expected): void
+    {
+        $this->assertSame($expected, \App\Support\Presenter::intList($input));
+    }
+
+    public static function intListInputProvider(): array
+    {
+        return [
+            'SQL NULL'          => [null, []],
+            '空 PHP 数组'        => [[], []],
+            '空 JSON 串'         => ['[]', []],
+            '空串'              => ['', []],
+            '纯空白'             => ['   ', []],
+            'JSON 数组串（DB 原生）' => ['[8801,8802]', [8801, 8802]],
+            'PHP 数组（cast 后）'  => [[8801, 8802], [8801, 8802]],
+            '逗号分隔'           => ['8801,8802', [8801, 8802]],
+            '单值'              => [8801, [8801]],
+            '脏数据跳过非数字'    => ['[8801,"x",8802]', [8801, 8802]],
+            '嵌套结构被跳过'      => ['[{"a":1}]', []],
+            '无法解析的串不伪造 id' => ['[not json', []],
+        ];
+    }
+
+    /** nullableIntList 必须在「真的是 null」时保持 null，其余形态与 intList 一致 */
+    #[DataProvider('intListInputProvider')]
+    public function testNullableIntListMirrorsIntListExceptForNull(mixed $input, array $expected): void
+    {
+        $this->assertSame(
+            $input === null ? null : $expected,
+            \App\Support\Presenter::nullableIntList($input)
+        );
+    }
+
     public function testPolicyJsonColumnsAreNormalizedToSqlNullOnWrite(): void
     {
-        $policy = new \App\Model\AlarmPolicy();
-        $normalized = $policy->normalizeForWrite([
+        // ⚠️ 调 `AlarmPolicy::normalizeJsonForWrite()`（**静态**），
+        //    不是 `$policy->normalizeForWrite()` —— 后者在本项目里根本不存在，
+        //    调用会抛 `Call to undefined method Hyperf\Database\Query\Builder::normalizeForWrite()`。
+        //    方法名和静态性都写错，说明这条测试从写下来那天起就没被执行过。
+        $normalized = \App\Model\AlarmPolicy::normalizeJsonForWrite([
             'object_ids' => [],
             'object_group_ids' => null,
             'object_filters' => null,
@@ -541,16 +607,15 @@ class AlarmRuleTest extends TestCase
         ]);
 
         // ⚠️ 绝不能是字符串 'null' 或 '[]'，否则 JSON_CONTAINS 引用检查会失效
-        $this->assertNull($normalized['object_ids']);
-        $this->assertNull($normalized['object_group_ids']);
-        $this->assertNull($normalized['object_filters']);
-        $this->assertNull($normalized['notification_template_ids']);
+        foreach (['object_ids', 'object_group_ids', 'object_filters', 'notification_template_ids'] as $col) {
+            $this->assertArrayHasKey($col, $normalized, $col . ' 应被处理而不是被丢掉');
+            $this->assertNull($normalized[$col], $col . ' 必须是真正的 SQL NULL');
+        }
     }
 
     public function testPolicyJsonColumnsKeepRealArrays(): void
     {
-        $policy = new \App\Model\AlarmPolicy();
-        $normalized = $policy->normalizeForWrite([
+        $normalized = \App\Model\AlarmPolicy::normalizeJsonForWrite([
             'object_ids' => [8801, 8802],
             'notification_template_ids' => [3, 5],
         ]);
@@ -577,7 +642,23 @@ class AlarmRuleTest extends TestCase
 
         $this->assertSame(123, Text::length($truncated));
         $this->assertSame(123 * 3, strlen($truncated), '按字符截断后不应切出半截字符');
-        $this->assertSame(' - 副本', substr($truncated, -5) === ' - 副本' ? ' - 副本' : '');
+        $this->assertTrue(mb_check_encoding($truncated, 'UTF-8'), '不得切出半截 UTF-8 字符');
+
+        // ⚠️ 关键区分用例：ASCII + 汉字混排。
+        //    旧实现用 `mb_strcut($s, 0, 123, 'UTF-8')`，第三个参数是**字节宽度**，
+        //    它保证不切出半个字符，代价是**凑不满就少给** ——
+        //    `"ABC" + 100 个"告"` 切 5 字节时只得到 `"ABC"`，后面的字被静默丢弃。
+        //    用 `mb_substr` 才是「取前 N 个字符」。
+        $mixed = 'ABC' . str_repeat('告', 100);
+        $this->assertSame(5, Text::length(Text::truncateChars($mixed, 5)));
+        $this->assertSame('ABC告告', Text::truncateChars($mixed, 5));
+
+        // 123 是「字符数上限」而不是「字节数上限」：纯中文串必须真的给出 123 个字
+        $this->assertSame(
+            str_repeat('告', 123),
+            $truncated,
+            'mb_strcut 会把 123 当字节数用，只给出 41 个字；必须是 mb_substr 的按字符语义。'
+        );
     }
 
     /** 注释声称的 ESCAPE 子句必须真的出现在 SQL 片段里（上一轮只写在注释里） */
