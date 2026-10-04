@@ -220,7 +220,25 @@ const form = useForm({
   },
 })
 
-const values = computed(() => form.state.values as PolicyFormValues)
+/**
+ * 表单值的**响应式**入口。
+ *
+ * ⚠️ 不能写 `computed(() => form.state.values)`：
+ * `FormApi` 里的 `get state()` 是普通 getter（@tanstack/form-core 的 dist/esm/FormApi.js，
+ * 该包 0 处 import vue），`form.state.values` 求值时**不建立任何 Vue 响应式依赖**，
+ * computed 只算一次就永久缓存。后果：
+ *   - `watch(values, …)` 永不触发 → `dirty` 恒为 false
+ *   - 所有 `computed(() => values.value.x)` 派生值冻结在首次求值那一刻
+ * 直接读 `values.value` 看似正常（store 原地改同一对象引用），所以纯函数单测全绿，
+ * 但真实向导里「下一步」校验恒读旧值 → 永远停在第 1 步、0 次请求。
+ *
+ * 正确入口是 `@tanstack/vue-form` 挂在 `form` 上的 `useSelector`，它内部走
+ * `@tanstack/vue-store` 的 `useSelector(api.store, selector)`，真正建立依赖。
+ */
+// 审查 E-1a：这里用 `as Ref<>` 洗掉了 useSelector 返回值上的 `Readonly`。
+// 当前 0 处对 values 赋值，所以不构成缺陷，但 cast 说谎会让将来写
+// `values.value = x` 的人以为合法、实际静默失效。诚实地保留只读语义。
+const values = form.useSelector(state => state.values) as Readonly<Ref<PolicyFormValues>>
 
 /** 统一的字段写入入口：`key` 一定是 `PolicyFormValues` 的顶层键。 */
 function setValue<K extends keyof PolicyFormValues>(key: K, value: PolicyFormValues[K]) {
