@@ -7,7 +7,7 @@
 >
 > 配套文档：
 > - `schema.sql` —— MySQL 8.0 建表 DDL（列名与本文响应字段一一对应，snake_case ↔ camelCase）
-> - `metrics.md` —— 指标字典与 6 条预置触发条件模板
+> - `metrics.md` —— 指标字典与 7 条预置触发条件模板
 > - `domain.md` —— 领域模型、ER 图、状态流转、校验规则清单
 
 ---
@@ -458,7 +458,7 @@ DB 列名 `frequency`（`SMALLINT UNSIGNED`）。重复通知规则：告警产�
 | `suggestedContinuity` | int | 推荐持续周期，1-10 |
 | `description` | string | 指标说明 |
 
-内容**唯一来源：`metrics.md` §1**（共 **28** 个指标）。`GET /api/alarm/metrics` 由该文档驱动实现，
+内容**唯一来源：`metrics.md` §1**（共 **38** 个指标）。`GET /api/alarm/metrics` 由该文档驱动实现，
 > 本契约不重复列举指标，避免两处漂移。
 
 ---
@@ -803,7 +803,7 @@ DB 列名 `frequency`（`SMALLINT UNSIGNED`）。重复通知规则：告警产�
 | `namespace` | string | 否 | 按命名空间精确过滤 |
 | `keyword` | string | 否 | 模糊匹配 `metricName` / `metricNameCn` |
 
-**响应**：`data` = `AlarmMetric[]`（**不分页**，固定 **28** 条，唯一来源 `metrics.md` §1）
+**响应**：`data` = `AlarmMetric[]`（**不分页**，固定 **38** 条，唯一来源 `metrics.md` §1）
 
 ```jsonc
 {
