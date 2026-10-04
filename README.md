@@ -25,7 +25,7 @@
 docs/alarm/          规格（唯一事实来源，已冻结）
   contract.md          19 个端点 · 12 组枚举 · 46 条业务约束 · JSON 归一化规则
   schema.sql           6 张表 DDL（29 CHECK / 30 索引 / 2 外键）
-  metrics.md           28 个指标 + 6 条预置触发条件模板
+  metrics.md           38 个指标 + 7 条预置触发条件模板
   domain.md            领域模型 / ER / 状态机
 
 server/              Hyperf v3.2 后端（64 PHP 文件 / 19 端点）
