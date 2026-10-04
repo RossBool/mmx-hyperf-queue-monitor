@@ -6,8 +6,14 @@ declare(strict_types=1);
  *
  * ## ⚠️ 为什么这个文件不能删
  *
- * `Hyperf\Support\env()` 读的是 `$_ENV` / `$_SERVER`，它**自己不解析 .env**。
- * 把 .env 灌进这两个超全局变量的是 vlucas/phpdotenv，而调用点是**这里**。
+ * `Hyperf\Support\env()` 的实现是 **`getenv($key)`**（实测 hyperf/support 3.2
+ * 的 `src/Functions.php`），它**自己不解析 .env 文件**。
+ * 把 .env 灌进进程环境的是 vlucas/phpdotenv，而调用点是**这里**。
+ *
+ * `Dotenv::createUnsafeImmutable()` 默认带 `PutenvAdapter`，
+ * 所以 `getenv()` / `$_ENV` / `$_SERVER` **三个来源都能读到** —— 已实测确认。
+ * （若换成 `createImmutable()` 之外的构造方式不注册 PutenvAdapter，
+ *   `getenv()` 会读不到，而 `env()` 正是走 `getenv()`，症状是恒为默认值。）
  *
  * 删掉本文件（或漏掉 `hyperf/dotenv` 依赖）会导致：
  *

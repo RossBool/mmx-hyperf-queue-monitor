@@ -21,7 +21,6 @@
         "hyperf/database": "^3.2",
         "hyperf/db-connection": "^3.2",
         "hyperf/di": "^3.2",
-        "hyperf/dotenv": "^3.2",
         "hyperf/engine": "^2.10",
         "hyperf/exception-handler": "^3.2",
         "hyperf/framework": "^3.2",
@@ -33,7 +32,8 @@
         "hyperf/process": "^3.2",
         "hyperf/validation": "^3.2",
         "php": ">=8.2",
-        "psr/clock": "^1.0"
+        "psr/clock": "^1.0",
+        "vlucas/phpdotenv": "^5.6"
     },
     "require-dev": {
         "hyperf/testing": "^3.2",
