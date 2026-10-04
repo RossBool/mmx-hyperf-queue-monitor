@@ -455,6 +455,63 @@ class PolicyPersistenceTest extends TestCase
         $service->destroy((int) $created['id']);
     }
 
+    /**
+     * 契约 §3.1 ⑥：`status` 必填。缺省/空串必须 422，**不能静默按 0 停用**。
+     *
+     * ⚠️ 这是 S-04 的核心回归。修复前 `assertStatus()` 对 null/'' 一律 `return 0`，
+     * 而 `changeStatus()` 与 `create()` 共用它 —— 于是 `POST /policies/{id}/status`
+     * 传 `{}` 或坏 JSON 会**静默把线上策略停掉并返回 200**。
+     *
+     * 显式 `0` 单独一条：它是合法停用值且为 falsy，最容易被误判成「缺省」。
+     */
+    public function testChangeStatusRejectsMissingStatus(): void
+    {
+        $service = $this->makeService();
+        $created = $service->create($this->validPayload('缺省状态-' . uniqid(), 1), $this->user());
+        $id = (int) $created['id'];
+
+        try {
+            foreach ([null, ''] as $bad) {
+                try {
+                    $service->changeStatus($id, $bad);
+                    $this->fail('changeStatus 应拒绝 ' . var_export($bad, true) . '，却静默成功了。');
+                } catch (BusinessException $e) {
+                    $this->assertSame(
+                        ErrorCode::VALIDATION_ERROR,
+                        $e->getBizCode(),
+                        '缺省 status 应返回 422，实际 ' . $e->getBizCode()
+                    );
+                    $this->assertArrayHasKey('status', $e->getErrors(), '422 必须带 status 字段级错误（契约 §0.4）。');
+                }
+            }
+
+            // 关键：以上两次拒绝都不能改动库里的状态
+            $this->assertSame(1, (int) AlarmPolicy::query()->find($id)->status, '被拒绝的请求不得改动策略状态。');
+        } finally {
+            $service->changeStatus($id, 0);
+            $service->destroy($id);
+        }
+    }
+
+    /** 显式 status=0（合法停用值、falsy）必须成功，且真的落库为 0。 */
+    public function testChangeStatusAcceptsExplicitZero(): void
+    {
+        $service = $this->makeService();
+        $created = $service->create($this->validPayload('显式停用-' . uniqid(), 1), $this->user());
+        $id = (int) $created['id'];
+
+        try {
+            $this->assertSame(
+                0,
+                $service->changeStatus($id, 0)['status'],
+                '显式 status=0 是合法停用值，不得被判为缺省。'
+            );
+            $this->assertSame(0, (int) AlarmPolicy::query()->find($id)->status);
+        } finally {
+            $service->destroy($id);
+        }
+    }
+
     /** H4：startTime > endTime -> 422。 */
     public function testHistoryTimeRangeMustBeOrdered(): void
     {

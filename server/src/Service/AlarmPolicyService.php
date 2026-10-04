@@ -259,7 +259,7 @@ class AlarmPolicyService
         $policy = $this->findOrFail($id);
 
         if ((int) $policy->status === 1) {
-            throw BusinessException::conflict(ErrorCode::POLICY_STATUS_CONFLICT);
+            throw BusinessException::conflict(ErrorCode::REASON_POLICY_STATUS_CONFLICT);
         }
 
         AlarmPolicy::query()->where('id', $id)->delete();
@@ -275,7 +275,8 @@ class AlarmPolicyService
         $policy = $this->findOrFail($id);
 
         $errors = new Validator();
-        $status = $this->assertStatus($rawStatus, $errors);
+        // 契约 §3.1 ⑥：status 必填，缺省/空串必须 422，不能静默按 0 停用
+        $status = $this->assertStatus($rawStatus, $errors, true);
         $errors->validate();
 
         if ((int) $policy->status !== $status) {
@@ -502,10 +503,21 @@ class AlarmPolicyService
         return $id;
     }
 
-    private function assertStatus(mixed $raw, Validator $errors): int
+    /**
+     * 校验并归一化 status。
+     *
+     * ⚠️ `$required` 区分两个语义**完全不同**的调用方（契约 §3.1）：
+     *   - `false`（③ 创建 / ④ 更新）：`status` 可缺省，缺省为 0（停用）
+     *   - `true`（⑥ 启停）：`status` **必填**。缺省或空串时若静默按 0 处理，
+     *     一次 `POST /status` 空 body 就会把线上策略停掉并返回 200。
+     */
+    private function assertStatus(mixed $raw, Validator $errors, bool $required = false): int
     {
         if ($raw === null || $raw === '') {
-            return 0; // 契约默认 0（停用）
+            if ($required) {
+                $errors->add('status', '策略状态为必填字段，0=停用 / 1=启用');
+            }
+            return 0; // 创建/更新时契约允许缺省为 0（停用）
         }
         $value = Pagination::intParam($raw, 'status', $errors);
         if ($value === null || ! in_array($value, array_keys(AlarmEnum::STATUS), true)) {
@@ -539,7 +551,7 @@ class AlarmPolicyService
             }
         }
 
-        throw BusinessException::conflict(ErrorCode::POLICY_NAME_DUPLICATED);
+        throw BusinessException::conflict(ErrorCode::REASON_POLICY_NAME_DUPLICATED);
     }
 
     /**
@@ -646,14 +658,45 @@ class AlarmPolicyService
         return $counts;
     }
 
+    /**
+     * 批量写入 conditions。
+     *
+     * ⚠️ 必须显式把 ConditionValidator 返回的 camelCase 键映射成表列名。
+     * `$fillable` 与 `alarm_policy_condition` 的列全是 snake_case，而
+     * ConditionValidator 按契约 §2.1 返回 camelCase（metricNamespace / metricName /
+     * metricNameCn）。这里若原样 array_merge，`Builder::insert()` 收到的是
+     * 驼峰键名 → 全部落不到真实列上，③POST / ④PUT 必然报 unknown column。
+     *
+     * 同表另一条写路径 `copy()` 已经这么做了，两条路径必须保持同一套映射。
+     * 用白名单而非 foreach 遍历：即使 validator 将来多返回一个键，也不会被
+     * 静默写进 INSERT。
+     *
+     * @param array<int, array<string, mixed>> $conditions ConditionValidator 产出的 camelCase 数组
+     */
     private function insertConditions(int $policyId, array $conditions): void
     {
         if ($conditions === []) {
             return;
         }
+        $now = Time::now();
         $rows = [];
         foreach ($conditions as $condition) {
-            $rows[] = array_merge(['policy_id' => $policyId], $condition);
+            $rows[] = [
+                'policy_id' => $policyId,
+                'sort' => (int) $condition['sort'],
+                'metric_namespace' => (string) $condition['metricNamespace'],
+                'metric_name' => (string) $condition['metricName'],
+                'metric_name_cn' => (string) $condition['metricNameCn'],
+                'unit' => (string) $condition['unit'],
+                'operator' => (string) $condition['operator'],
+                'threshold' => $condition['threshold'],
+                'period' => (int) $condition['period'],
+                'continuity' => (int) $condition['continuity'],
+                'level' => (int) $condition['level'],
+                'frequency' => (int) $condition['frequency'],
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
         }
         AlarmPolicyCondition::query()->insert($rows);
     }
