@@ -8,6 +8,7 @@
  * @see ./response.mock.ts —— 统一响应信封工厂（必须与 contract.md §0.2 一致）
  * @see ./alarm.mock.ts —— 告警模块示例数据（照抄 contract.md）
  */
+import { alarmMetricsMock } from '@/mocks/alarm-metrics.generated'
 import { ALARM_ERROR_CODE } from '@/types/alarm'
 
 import { historyListMock, notificationTemplateListMock, overviewMock, policyDetailMock, policyListMock } from './alarm.mock'
@@ -32,22 +33,16 @@ function registerAlarmMocks() {
     return ok(policyDetailMock)
   })
 
-  // ⑧ GET /api/alarm/metrics —— 指标字典。⚠️ 真实实现有 28 条，唯一来源是 metrics.md §1，
-  //    这里只给 1 条示例用于打通链路，不要把这份数据当字典用。
-  registerMock('get', '/alarm/metrics', () => ok([
-    {
-      namespace: 'CVM',
-      metricName: 'CpuUtilizationRate',
-      metricNameCn: 'CPU 使用率',
-      unit: '%',
-      policyType: [2],
-      periodOptions: [1, 5, 10, 30, 60],
-      defaultOperator: '>',
-      defaultThreshold: 80,
-      suggestedContinuity: 3,
-      description: '统计周期内实例 CPU 使用率平均值，单位 %，取值 0-100。',
-    },
-  ]))
+  // ⑧ GET /api/alarm/metrics —— 指标字典，**完整 38 条**。
+  //
+  // 数据由 scripts/gen-mock-metrics.mjs 从 server/config/autoload/metrics.php 生成，
+  // 不再手写。此前这里只有 1 条硬编码，注释还写着「不要把这份数据当字典用」——
+  // 后果是 mock 模式下指标下拉只有 1 项，且与真实字典的差异**不会有任何报错**。
+  //
+  // ⚠️ `/metrics` 的查询参数（policyType / namespace / keyword）在 mock 里**仍然不生效**
+  //    —— 这是 mock-router 的已知限制（query 被丢弃），不是本次改动引入的。
+  //    要验证筛选正确性必须连真实后端。
+  registerMock('get', '/alarm/metrics', () => ok(alarmMetricsMock))
 
   // ⑬ GET /api/alarm/notification-templates —— 通知模板分页（返回完整 channels）
   registerMock('get', '/alarm/notification-templates', () => page(notificationTemplateListMock))

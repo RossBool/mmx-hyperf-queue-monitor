@@ -1,3 +1,5 @@
+import type { AlarmMonitorType } from '@/types/alarm'
+
 /**
  * 告警模块公共枚举选项 —— 把契约类型层的中文 label 映射转成下拉框可直接用的
  * `{ label, value }` 数组，供 **告警策略 / 通知模板 / 告警历史** 三个页面共用。
@@ -19,6 +21,7 @@ import {
   ALARM_LEVEL_LABEL,
   ALARM_MONITOR_TYPE,
   ALARM_MONITOR_TYPE_LABEL,
+  ALARM_MONITOR_TYPE_POLICY_TYPES,
   ALARM_NOTIFY_CHANNEL,
   ALARM_NOTIFY_CHANNEL_LABEL,
   ALARM_OBJECT_TYPE,
@@ -61,8 +64,26 @@ export const alarmOperatorOptions = toOptions(ALARM_OPERATOR, ALARM_OPERATOR_LAB
 /** 重复通知频率（含扩展值 `0` 不重复） */
 export const alarmFrequencyOptions = toOptions(ALARM_FREQUENCY, ALARM_FREQUENCY_LABEL)
 
-/** 监控类型 */
+/** 监控类型（**全部 5 项**，用于列表筛选 —— 可能存在存量数据需要按 3/4/5 查） */
 export const alarmMonitorTypeOptions = toOptions(ALARM_MONITOR_TYPE, ALARM_MONITOR_TYPE_LABEL)
+
+/**
+ * 监控类型（**仅当前可用的**），用于新建/编辑向导。
+ *
+ * ⚠️ 契约 §1.1 联动表写明 `3`/`4`/`5`（RUM / 云拨测 / 终端性能）在 v1.0
+ * **没有对应的 policyType，选了返回 422**。
+ *
+ * 此前向导直接用了 `alarmMonitorTypeOptions`（全部 5 项），于是：
+ *   选「前端性能监控」→ 策略类型下拉为空 → 提示「该监控类型在 v1.0 暂无可用策略类型」
+ *   → **用户既走不完向导，也退不出这个选择**，是功能不可用而非体验瑕疵。
+ *
+ * 正确做法是**不提供不可选项**，而不是提供后再告诉他不行。
+ * 补齐 RUM / 云拨测的 policyType 与指标后，把 `ALARM_MONITOR_TYPE_POLICY_TYPES`
+ * 里对应的空数组填上即可自动放开 —— 本函数的过滤是数据驱动的，无需改这里。
+ */
+export const alarmSelectableMonitorTypeOptions = alarmMonitorTypeOptions.filter(
+  option => (ALARM_MONITOR_TYPE_POLICY_TYPES[option.value as AlarmMonitorType] ?? []).length > 0,
+)
 
 /** 策略类型 */
 export const alarmPolicyTypeOptions = toOptions(ALARM_POLICY_TYPE, ALARM_POLICY_TYPE_LABEL)

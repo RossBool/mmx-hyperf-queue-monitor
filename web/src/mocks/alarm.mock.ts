@@ -2,8 +2,10 @@
  * 告警模块 mock 数据 —— 全部**照抄** `/workspace/docs/alarm/contract.md` 里的示例响应，
  * 目的是让联调任务在前端先看到与后端 1:1 的结构，而不是我自己编的假数据。
  *
- * ⚠️ 指标字典（`GET /api/alarm/metrics`）的 28 条指标**不在这里硬编码**：
- * 契约规定其唯一来源是 `metrics.md` §1，本文件只给一条示例条目用于打通链路。
+ * ⚠️ 指标字典（`GET /api/alarm/metrics`）的 38 条指标**不在这里硬编码**：
+ * 契约规定其唯一来源是 `metrics.md` §1。
+ * 字典数据已移到 `alarm-metrics.generated.ts`（由 `scripts/gen-mock-metrics.mjs`
+ * 从后端 `config/autoload/metrics.php` 生成），本文件**不再含任何指标条目**。
  */
 import type {
   AlarmHistory,
