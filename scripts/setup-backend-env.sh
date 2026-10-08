@@ -63,13 +63,20 @@ nohup mysqld_safe --user=mysql >/tmp/mysqld.log 2>&1 &
 for i in $(seq 1 40); do mysqladmin ping >/dev/null 2>&1 && break; sleep 3; done
 mysqladmin ping >/dev/null 2>&1 || die "MySQL 起不来"
 
-# 首次安装的 root 密码由 debconf 决定；先试空密码再试 rootpw
-if ! mysql -uroot -e "SELECT 1" >/dev/null 2>&1; then
-  if ! mysql -uroot -prootpw -e "SELECT 1" >/dev/null 2>&1; then
-    mysql -uroot --skip-password -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'rootpw';" 2>/dev/null
-  fi
+# ⚠️ MySQL 8 的 root 默认走 auth_socket：**只有走 unix socket 的 mysql 客户端能连上**，
+#    应用用 PDO 走 TCP（127.0.0.1），会被拒：
+#      Access denied for user 'root'@'localhost' (SQLSTATE 1698)
+#    这个坑会让「装好了但连不上」，而且 CLI 一测又正常，极易误判成环境好了。
+#    所以这里**必须显式改成 native_password，并当场用 TCP 验证**，不验证不算成功。
+mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'rootpw'; FLUSH PRIVILEGES;" 2>/dev/null \
+  || mysql -uroot -prootpw -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'rootpw'; FLUSH PRIVILEGES;" 2>/dev/null \
+  || true
+
+if ! mysql -uroot -prootpw -h 127.0.0.1 -e "SELECT 1" >/dev/null 2>&1; then
+  die "MySQL TCP 认证不通（应用会全部 500）。请手动执行：ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'rootpw';"
 fi
-mysql -uroot -prootpw -e "SELECT VERSION() v" 2>/dev/null | tail -1
+echo "  ✓ MySQL TCP 认证已验证"
+mysql -uroot -prootpw -h 127.0.0.1 -e "SELECT VERSION() v" 2>/dev/null | tail -1
 
 # ── 4. Redis ──────────────────────────────────────────────────────
 log "安装 Redis"
