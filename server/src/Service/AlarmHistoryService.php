@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Support\Query;
 use App\Constants\AlarmEnum;
 use App\Constants\ErrorCode;
 use App\Exception\BusinessException;
@@ -39,21 +40,21 @@ class AlarmHistoryService
         $query = AlarmHistory::query();
         $errors = new Validator();
 
-        $policyId = Pagination::intParam($request->input('policyId'), 'policyId', $errors);
+        $policyId = Pagination::intParam(Query::get($request, 'policyId'), 'policyId', $errors);
         if ($policyId !== null) {
             $query->where('policy_id', $policyId);
         }
-        $level = Pagination::intParam($request->input('level'), 'level', $errors);
+        $level = Pagination::intParam(Query::get($request, 'level'), 'level', $errors);
         if ($level !== null) {
             $errors->enumInt($level, array_keys(AlarmEnum::LEVEL), 'level', '告警等级必须是 1/2/3 之一');
             $query->where('level', $level);
         }
-        $status = Pagination::intParam($request->input('status'), 'status', $errors);
+        $status = Pagination::intParam(Query::get($request, 'status'), 'status', $errors);
         if ($status !== null) {
             $errors->enumInt($status, array_keys(AlarmEnum::HISTORY_STATUS), 'status', '告警状态必须是 1/2/3/4 之一');
             $query->where('status', $status);
         }
-        $keyword = $this->strOrNull($request->input('keyword'));
+        $keyword = $this->strOrNull(Query::get($request, 'keyword'));
         if ($keyword !== null) {
             if (Text::length($keyword) > AlarmEnum::POLICY_NAME_MAX) {
                 $errors->add('keyword', 'keyword 长度不能超过 128 个字符');
@@ -67,10 +68,10 @@ class AlarmHistoryService
         }
 
         // H4：startTime <= endTime，否则 422
-        $startTime = Time::tryParse($this->strOrNull($request->input('startTime')));
-        $endTime = Time::tryParse($this->strOrNull($request->input('endTime')));
-        $rawStart = $this->strOrNull($request->input('startTime'));
-        $rawEnd = $this->strOrNull($request->input('endTime'));
+        $startTime = Time::tryParse($this->strOrNull(Query::get($request, 'startTime')));
+        $endTime = Time::tryParse($this->strOrNull(Query::get($request, 'endTime')));
+        $rawStart = $this->strOrNull(Query::get($request, 'startTime'));
+        $rawEnd = $this->strOrNull(Query::get($request, 'endTime'));
         if ($rawStart !== null && $startTime === null) {
             $errors->add('startTime', '开始时间格式必须是 YYYY-MM-DD HH:mm:ss');
         }
@@ -140,7 +141,7 @@ class AlarmHistoryService
 
         // H3 快速失败：已处理直接 409（UPDATE 的 status=1 守卫是第二道防线）
         if ((int) $history->status !== AlarmEnum::HISTORY_STATUS_UNHANDLED) {
-            throw BusinessException::conflict(ErrorCode::HISTORY_ALREADY_HANDLED);
+            throw BusinessException::conflict(ErrorCode::REASON_HISTORY_ALREADY_HANDLED);
         }
 
         $now = Time::now();
@@ -166,7 +167,7 @@ class AlarmHistoryService
             ->update($attributes);
 
         if ($affected !== 1) {
-            throw BusinessException::conflict(ErrorCode::HISTORY_ALREADY_HANDLED);
+            throw BusinessException::conflict(ErrorCode::REASON_HISTORY_ALREADY_HANDLED);
         }
 
         return Presenter::history($this->findOrFail($id));

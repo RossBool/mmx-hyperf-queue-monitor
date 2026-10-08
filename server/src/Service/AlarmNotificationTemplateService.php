@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Support\Query;
 use App\Constants\AlarmEnum;
 use App\Constants\ErrorCode;
 use App\Exception\BusinessException;
@@ -44,12 +45,12 @@ class AlarmNotificationTemplateService
         $query = AlarmNotificationTemplate::query();
         $errors = new Validator();
 
-        $isPreset = Pagination::intParam($request->input('isPreset'), 'isPreset', $errors);
+        $isPreset = Pagination::intParam(Query::get($request, 'isPreset'), 'isPreset', $errors);
         if ($isPreset !== null) {
             $errors->enumInt($isPreset, [0, 1], 'isPreset', 'isPreset 必须是 0/1 之一');
             $query->where('is_preset', $isPreset);
         }
-        $keyword = $this->strOrNull($request->input('keyword'));
+        $keyword = $this->strOrNull(Query::get($request, 'keyword'));
         if ($keyword !== null) {
             $like = Text::likeExpression($keyword);
             $query->where(function ($q) use ($like): void {
@@ -57,7 +58,7 @@ class AlarmNotificationTemplateService
                     ->orWhereRaw(Text::likeCondition('remark'), [$like]);
             });
         }
-        $channel = Pagination::intParam($request->input('channel'), 'channel', $errors);
+        $channel = Pagination::intParam(Query::get($request, 'channel'), 'channel', $errors);
         if ($channel !== null) {
             $errors->enumInt($channel, array_keys(AlarmEnum::NOTIFY_CHANNEL), 'channel', '通知渠道必须是 1/2/3/4/5 之一');
         }
@@ -158,7 +159,7 @@ class AlarmNotificationTemplateService
         $template = $this->findOrFail($id);
 
         if ((int) $template->is_preset === 1) {
-            throw BusinessException::conflict(ErrorCode::PRESET_READONLY);
+            throw BusinessException::conflict(ErrorCode::REASON_PRESET_READONLY);
         }
 
         $referrer = Db::selectOne(
@@ -168,8 +169,8 @@ class AlarmNotificationTemplateService
             ['tid' => $id]
         );
         if ($referrer !== null) {
-            throw new BusinessException(
-                ErrorCode::TEMPLATE_IN_USE,
+            throw BusinessException::conflict(
+                ErrorCode::REASON_TEMPLATE_IN_USE,
                 sprintf('模板已被策略「%s」引用，不可删除', $referrer->name ?? '')
             );
         }

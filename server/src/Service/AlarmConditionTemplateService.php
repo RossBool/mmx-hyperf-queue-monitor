@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Support\Query;
 use App\Constants\AlarmEnum;
 use App\Constants\ErrorCode;
 use App\Exception\BusinessException;
@@ -40,17 +41,17 @@ class AlarmConditionTemplateService
         $query = AlarmConditionTemplate::query();
         $errors = new Validator();
 
-        $policyType = Pagination::intParam($request->input('policyType'), 'policyType', $errors);
+        $policyType = Pagination::intParam(Query::get($request, 'policyType'), 'policyType', $errors);
         if ($policyType !== null) {
             $errors->enumInt($policyType, array_keys(AlarmEnum::POLICY_TYPE), 'policyType', '策略类型必须是 1/2/3/4 之一');
             $query->where('policy_type', $policyType);
         }
-        $isPreset = Pagination::intParam($request->input('isPreset'), 'isPreset', $errors);
+        $isPreset = Pagination::intParam(Query::get($request, 'isPreset'), 'isPreset', $errors);
         if ($isPreset !== null) {
             $errors->enumInt($isPreset, [0, 1], 'isPreset', 'isPreset 必须是 0/1 之一');
             $query->where('is_preset', $isPreset);
         }
-        $keyword = $this->strOrNull($request->input('keyword'));
+        $keyword = $this->strOrNull(Query::get($request, 'keyword'));
         if ($keyword !== null) {
             $like = Text::likeExpression($keyword);
             $query->where(function ($q) use ($like): void {
@@ -122,13 +123,13 @@ class AlarmConditionTemplateService
         $template = $this->findOrFail($id);
 
         if ((int) $template->is_preset === 1) {
-            throw BusinessException::conflict(ErrorCode::PRESET_READONLY);
+            throw BusinessException::conflict(ErrorCode::REASON_PRESET_READONLY);
         }
 
         $referrer = AlarmPolicy::query()->where('condition_template_id', $id)->first();
         if ($referrer !== null) {
-            throw new BusinessException(
-                ErrorCode::TEMPLATE_IN_USE,
+            throw BusinessException::conflict(
+                ErrorCode::REASON_TEMPLATE_IN_USE,
                 sprintf('模板已被策略「%s」引用，不可删除', $referrer->name)
             );
         }
