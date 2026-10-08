@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Support\Query;
 use App\Constants\AlarmEnum;
 use App\Constants\ErrorCode;
 use App\Exception\BusinessException;
@@ -68,7 +69,7 @@ class AlarmPolicyService
         $query = AlarmPolicy::query();
         $errors = new Validator();
 
-        $keyword = $this->strOrNull($request->input('keyword'));
+        $keyword = $this->strOrNull(Query::get($request, 'keyword'));
         if ($keyword !== null) {
             // keyword 必须转义，并由 likeCondition() 真的写进 SQL 的 ESCAPE 子句，
             // 否则 % / _ 会变成通配符（全表扫 + 语义错误）
@@ -80,27 +81,27 @@ class AlarmPolicyService
         }
 
         // 非法枚举值返回 422（契约 §3.1 ①）
-        $monitorType = Pagination::intParam($request->input('monitorType'), 'monitorType', $errors);
+        $monitorType = Pagination::intParam(Query::get($request, 'monitorType'), 'monitorType', $errors);
         if ($monitorType !== null) {
             $errors->enumInt($monitorType, array_keys(AlarmEnum::MONITOR_TYPE), 'monitorType', '监控类型必须是 1/2/3/4/5 之一');
             $query->where('monitor_type', $monitorType);
         }
-        $policyType = Pagination::intParam($request->input('policyType'), 'policyType', $errors);
+        $policyType = Pagination::intParam(Query::get($request, 'policyType'), 'policyType', $errors);
         if ($policyType !== null) {
             $errors->enumInt($policyType, array_keys(AlarmEnum::POLICY_TYPE), 'policyType', '策略类型必须是 1/2/3/4 之一');
             $query->where('policy_type', $policyType);
         }
-        $status = Pagination::intParam($request->input('status'), 'status', $errors);
+        $status = Pagination::intParam(Query::get($request, 'status'), 'status', $errors);
         if ($status !== null) {
             $errors->enumInt($status, array_keys(AlarmEnum::STATUS), 'status', '策略状态必须是 0/1 之一');
             $query->where('status', $status);
         }
-        $level = Pagination::intParam($request->input('level'), 'level', $errors);
+        $level = Pagination::intParam(Query::get($request, 'level'), 'level', $errors);
         if ($level !== null) {
             $errors->enumInt($level, array_keys(AlarmEnum::LEVEL), 'level', '告警等级必须是 1/2/3 之一');
             $query->where('level', $level);
         }
-        $projectId = Pagination::intParam($request->input('projectId'), 'projectId', $errors);
+        $projectId = Pagination::intParam(Query::get($request, 'projectId'), 'projectId', $errors);
         if ($projectId !== null) {
             $query->where('project_id', $projectId);
         }

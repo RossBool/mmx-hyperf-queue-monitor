@@ -535,13 +535,13 @@ class PolicyPersistenceTest extends TestCase
         $service = $this->makeHistoryService();
 
         $request = $this->createMock(\Hyperf\HttpServer\Contract\RequestInterface::class);
-        $request->method('input')->willReturnCallback(static function (string $key, $default = null) {
-            return match ($key) {
-                'startTime' => '2026-09-30 10:00:00',
-                'endTime' => '2026-09-01 00:00:00',
-                default => $default,
-            };
-        });
+        // ⚠️ stub PSR-7 标准的 getQueryParams()，不是 Hyperf 宏 'input()'。
+        //    生产代码读的是 getQueryParams()；桩上只定义 input() 会让
+        //    「时间范围倒置」这条断言永远测不到（参数全变 null → 不报错 → 测试失败）。
+        $request->method('getQueryParams')->willReturn([
+            'startTime' => '2026-09-30 10:00:00',
+            'endTime' => '2026-09-01 00:00:00',
+        ]);
 
         try {
             $service->paginate($request);
