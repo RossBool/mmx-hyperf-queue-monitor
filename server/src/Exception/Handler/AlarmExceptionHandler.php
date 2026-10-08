@@ -213,10 +213,26 @@ class AlarmExceptionHandler extends ExceptionHandler
     /**
      * 沿异常链取 (MySQL 驱动错误码, SQLSTATE)。
      *
-     * hyperf/database 的 QueryException 继承 PDOException：
-     * - `getCode()` 在 PDOException 上就是**驱动错误码**（1062 / 1452 …）
-     * - `errorInfo[0]` 是 SQLSTATE（'23000' / '22003' …）
-     * 部分驱动路径下 `errorInfo` 可能未初始化，故两路都做兜底。
+     * ## ⚠️ errno 只能从 `errorInfo[1]` 取，**不能从 `getCode()` 取**
+     *
+     * 真实 MySQL 8.0.46 + hyperf/database 3.2 实测（`probe-dup.php` 复现唯一键冲突）：
+     *
+     *     Hyperf\Database\Exception\UniqueConstraintViolationException
+     *       getCode()   = '23000'    ← **SQLSTATE 字符串，不是 errno！**
+     *       errorInfo   = ['23000', 1062, "Duplicate entry ..."]
+     *                                     ↑ errno 在这里
+     *
+     * 旧实现 `(int) $t->getCode()` 把 SQLSTATE `'23000'` 转成了整数 **23000**，
+     * 于是 `=== 1062` 永远不成立，唯一键冲突被降级成 **422 参数校验失败**，
+     * 用户看到的是「参数错误」，运维查错方向。
+     *
+     * 之所以之前没发现：单元测试用 `new PDOException($msg, 1062)` 造异常，
+     * 那个构造器第二个参数**确实**会写进 `getCode()` —— 测试桩比真实驱动更「听话」，
+     * 于是一条针对不存在行为的断言绿灯了。**这条只有真连 MySQL 才暴露。**
+     *
+     * `errorInfo` 是 PDO 的权威来源，顺序固定为 `[SQLSTATE, driver_errno, driver_message]`。
+     * 只有在 `errorInfo` 缺失时（部分驱动路径）才退回 `getCode()`，
+     * 且此时**必须确认它长得像 errno**（纯数字且不是 5 位的 SQLSTATE）。
      *
      * @return array{0: int|null, 1: string|null}
      */
@@ -224,11 +240,26 @@ class AlarmExceptionHandler extends ExceptionHandler
     {
         for ($t = $throwable; $t !== null; $t = $t->getPrevious()) {
             $info = property_exists($t, 'errorInfo') ? $t->errorInfo : null;
-            $state = is_array($info) ? (string) ($info[0] ?? '') : '';
-            // 驱动码：PDOException::getCode() 在这里是 errno，不是 HTTP 状态码
-            $errno = (int) $t->getCode();
-            if ($errno !== 0 || $state !== '') {
-                return [$errno === 0 ? null : $errno, $state === '' ? null : $state];
+            $info = is_array($info) ? array_values($info) : [];
+
+            // SQLSTATE：优先 errorInfo[0]
+            $state = (string) ($info[0] ?? '');
+            if ($state === '' && is_string($t->getCode()) && preg_match('/^[0-9A-Z]{5}$/', $t->getCode())) {
+                $state = (string) $t->getCode();
+            }
+
+            // 驱动 errno：优先 errorInfo[1]
+            $errno = null;
+            if (isset($info[1]) && is_numeric($info[1])) {
+                $errno = (int) $info[1];
+            } elseif (is_int($t->getCode())) {
+                // 兜底：只有当 getCode() 本来就是整数时才能当 errno 用。
+                // 若是 '23000' 这种 SQLSTATE 字符串，is_int 为 false，不会误用。
+                $errno = $t->getCode();
+            }
+
+            if ($errno !== null || $state !== '') {
+                return [$errno, $state === '' ? null : $state];
             }
         }
 

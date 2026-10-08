@@ -32,6 +32,18 @@ class AuthMiddleware implements MiddlewareInterface
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
+        // ⚠️ 本中间件是**全局**中间件（config/autoload/middlewares.php 的 'http' 段），
+        //    它会拦下**每一个**请求，包括 `/favicon.ico` 这种浏览器自动发起的静态资源请求。
+        //    浏览器不会给 favicon 带 Authorization 头 → 401 → 控制台红字 + 日志噪声。
+        //
+        //    契约把 401 的适用范围定义为「/api/alarm 下的业务端点」，
+        //    favicon 不属于业务端点，不该走鉴权。
+        //    这里用路径前缀判定而不是白名单具体路由：新增业务端点时自动被覆盖，
+        //    不会因为忘了加进白名单而漏鉴权。
+        if (! str_starts_with($request->getUri()->getPath(), '/api/')) {
+            return $handler->handle($request);
+        }
+
         $this->authenticate($request);
 
         return $handler->handle($request);
@@ -39,8 +51,23 @@ class AuthMiddleware implements MiddlewareInterface
 
     private function authenticate(ServerRequestInterface $request): void
     {
-        /** @var RequestInterface $request */
-        $authorization = $request->header('authorization', '');
+        /**
+         * ⚠️ 必须用 PSR-7 的 `getHeaderLine()`，**不能**用 `header()`。
+         *
+         *    `header()` 是 Laravel / Symfony 风格的便捷方法，**PSR-7 接口里没有**，
+         *    Hyperf 3.2 的 `Hyperf\HttpMessage\Server\Request` 也不提供它。
+         *    调用结果是 `Call to undefined method ...Request::header()` →
+         *    **每一个请求都 500**，19 个端点全部不可用。
+         *
+         *    为什么单测没抓到：`AuthMiddlewareTest` 用的是手写桩对象，
+         *    桩上恰好定义了 `header()`，于是「通过了」。
+         *    桩比真实实现更宽松 = 测试在验证一个不存在的 API。
+         *    这条只有真起服务才会暴露 —— 已加 HTTP 端到端测试防回归。
+         *
+         *    `getHeaderLine()` 的大小写不敏感（PSR-7 规定 header 名不区分大小写），
+         *    多值头会拼成逗号分隔，正好符合下面正则的预期。
+         */
+        $authorization = $request->getHeaderLine('authorization');
         if ($authorization === '' || ! preg_match('/^Bearer\s+(\S+)$/i', trim($authorization), $m)) {
             throw BusinessException::unauthorized();
         }
