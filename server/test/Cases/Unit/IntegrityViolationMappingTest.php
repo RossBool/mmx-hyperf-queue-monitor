@@ -47,10 +47,73 @@ final class IntegrityViolationMappingTest extends TestCase
         // 正确做法：PDOException 构造函数第二个参数就是 code，
         // 实测 `new PDOException($msg, 1062)->getCode() === 1062`；
         // `$errorInfo` 是 public 属性，实测可写。
-        // 生产代码 `driverErrorCodes()` 读的就是这两个来源。
         $e = new \PDOException($message, $errno);
         $e->errorInfo = [$sqlstate, (string) $errno, $message];
         return $e;
+    }
+
+    /**
+     * **真实驱动形态**的异常 —— 这条是本文件最重要的一条。
+     *
+     * 真连 MySQL 8.0.46 触发唯一键冲突时（`probe-dup.php` 实测），
+     * hyperf/database 抛的是 `UniqueConstraintViolationException`，它的形态是：
+     *
+     *     getCode() = '23000'                       ← **SQLSTATE 字符串**
+     *     errorInfo = ['23000', 1062, 'Duplicate ...']  ← errno 在 [1]
+     *
+     * 而 `dbError()` 造出来的是 `getCode() === 1062`（整数）。
+     * 两者在 `(int) $t->getCode()` 这行上分道扬镳：
+     * 前者得到 23000，后者得到 1062。
+     *
+     * 旧实现只按后者的形态写，于是对前者判错：唯一键冲突被降级成 422。
+     * 这正是「测试桩比真实驱动更听话」的典型 ——
+     * 上一轮 S-09 的修复在单测里全绿，在真实 MySQL 上一直是坏的。
+     */
+    private function realDriverError(int $errno, string $sqlstate, string $message = 'db error'): \PDOException
+    {
+        $pdo = new \PDOException($message);
+        // PDO 内部创建异常时 **绕过构造器**（`zend_default_exception_new`），
+        // 所以 `Exception::$code` 能是 SQLSTATE 字符串。PHP 的构造器把 code 限定为 int，
+        // 复刻真实形态只能用反射写这个 protected 属性。
+        $ref = new \ReflectionProperty(\Exception::class, 'code');
+        $ref->setAccessible(true);
+        $ref->setValue($pdo, $sqlstate);
+
+        // errno 只出现在 errorInfo[1]，与实测一致
+        $pdo->errorInfo = [$sqlstate, $errno, $message];
+        return $pdo;
+    }
+
+    public function testRealDriverShapeStillClassifiesDuplicateKeyAs409(): void
+    {
+        $e = $this->realDriverError(1062, '23000', "Duplicate entry 'x' for key 'alarm_policy.uk_policy_name'");
+
+        // 先把前提钉死：这个异常的 getCode() 确实不是 errno
+        self::assertSame('23000', $e->getCode(), '真实驱动下 getCode() 是 SQLSTATE 字符串，前提变了本用例就失去意义');
+
+        [$code, $message] = $this->resolve($e);
+        self::assertSame(ErrorCode::POLICY_NAME_DUPLICATED, $code, '真实驱动形态下重名必须仍是 409，不能降级成 422');
+        self::assertNotSame('参数校验失败', $message);
+    }
+
+    #[DataProvider('realDriverErrnoProvider')]
+    public function testRealDriverShapeMapsEveryErrno(int $errno, string $sqlstate, int $expected): void
+    {
+        [$code] = $this->resolve($this->realDriverError($errno, $sqlstate));
+        self::assertSame($expected, $code, "errno $errno 在真实驱动形态下判错");
+    }
+
+    public static function realDriverErrnoProvider(): array
+    {
+        return [
+            '唯一键 1062'  => [1062, '23000', ErrorCode::POLICY_NAME_DUPLICATED],
+            '外键 1451'    => [1451, '23000', ErrorCode::RELATION_CONFLICT],
+            '外键 1452'    => [1452, '23000', ErrorCode::RELATION_CONFLICT],
+            '非空 1048'    => [1048, '23000', ErrorCode::VALIDATION_ERROR],
+            '越界 1264'    => [1264, '22003', ErrorCode::VALIDATION_ERROR],
+            '语法 1064'    => [1064, '42000', ErrorCode::INTERNAL_ERROR],
+            '表不存在 1146' => [1146, '42S02', ErrorCode::INTERNAL_ERROR],
+        ];
     }
 
     /** @return array{0: int, 1: string} [bizCode, message] */
