@@ -22,7 +22,7 @@ use PHPUnit\Framework\TestCase;
  *   - P12/P13 的结构校验（数量上限 / 重复 / 整数）传入 `$templates = null` 即可
  *   - P13 存在性与 N9 通过构造 `AlarmNotificationTemplate` 模型实例来验证
  *   - 分页走**真实的** `Pagination::fromRequest()`，用 PHPUnit 生成的
- *     `RequestInterface` 替身，只 stub `input()`
+ *     `RequestInterface` 替身，stub 的是 PSR-7 标准的 `getQueryParams()`
  */
 class PolicyPayloadValidatorTest extends TestCase
 {
@@ -405,10 +405,13 @@ class PolicyPayloadValidatorTest extends TestCase
      */
     private function paginate(array $query): array
     {
+        // ⚠️ stub 的是 'getQueryParams()'（PSR-7 标准方法），
+        //    不是 'input()'。input() 是 Hyperf 的 Macroable 扩展，
+        //    只有起真实服务、由 http-server 的 ConfigProvider 注册宏之后才存在。
+        //    桩上只定义 input() 会让测试「通过」，而生产代码走的是另一条路 ——
+        //    这正是本轮 3 个真生产 bug 之一的成因模式。
         $request = $this->createMock(RequestInterface::class);
-        $request->method('input')->willReturnCallback(
-            static fn (string $key, $default = null) => $query[$key] ?? $default
-        );
+        $request->method('getQueryParams')->willReturn($query);
 
         return Pagination::fromRequest($request);
     }
