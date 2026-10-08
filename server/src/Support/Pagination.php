@@ -25,8 +25,8 @@ class Pagination
     {
         $errors = new Validator();
 
-        $page = self::intParam($request->input('page'), 'page', $errors);
-        $pageSize = self::intParam($request->input('pageSize'), 'pageSize', $errors);
+        $page = self::intParam(Query::get($request, 'page'), 'page', $errors);
+        $pageSize = self::intParam(Query::get($request, 'pageSize'), 'pageSize', $errors);
 
         if ($page !== null && $page < 1) {
             $errors->add('page', '页码必须是大于等于 1 的整数');
