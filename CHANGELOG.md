@@ -402,3 +402,147 @@ PHP 的属性类型规则比方法参数严格：**子类不能把父类的可�
 - **10 个新指标的 `defaultThreshold`**：仍未经真实监控数据校准。
 
 VERDICT: PASS
+
+---
+
+## 2026-10-05（第五段）· HTTP 端到端：19 个端点真跑，抓出 5 个真生产 bug
+
+第四段把后端跑到了 Service 层，HTTP 层仍是一整条**从未被执行过**的链路：
+中间件 → 路由 → 容器装配 → 参数绑定 → 异常处理 → HTTP 状态码。
+契约 §0.5 把业务 code 和 HTTP 状态码绑定（409 / 422 / 401 各不相同），
+这一层错了，前端拿到的状态码就和契约对不上。
+
+这次装齐 Redis，用 `scripts/setup-backend-env.sh` 把环境固化成可复现脚本，
+起真实 Swoole 服务，用 `scripts/e2e-http.mjs` 打真实 HTTP 请求。
+
+### 结果
+
+**19 个端点 + favicon，60 条断言全绿。**
+
+首轮 31 条失败。逐条回源码核实后，**5 个是真生产 bug**，其中 3 个是致命的。
+
+### 致命级：整个 API 是死的
+
+#### H-1 鉴权中间件调用了不存在的方法 → 每个请求 500
+
+`AuthMiddleware` 用 `$request->header('authorization', '')` 取 token。
+`header()` 是 **Laravel / Symfony 风格**的便捷方法，PSR-7 没有，
+Hyperf 3.2 的 `Hyperf\HttpServer\Request` 也不提供。
+实测 `method_exists(Request::class, 'header')` → `false`。
+
+后果：**每一个请求都 500**，19 个端点全部不可用。
+之所以单测没抓到：`AuthMiddlewareTest` 用的是手写桩对象，
+桩上恰好定义了 `header()` —— **桩比真实实现更宽松 = 测试在验证一个不存在的 API**。
+已改用 PSR-7 标准的 `getHeaderLine()`。
+
+#### H-2 列表/筛选/分页的 26 处取参全部调用不存在的方法
+
+`$request->input(...)` 同理不存在。这 26 处覆盖**全部**列表端点的查询参数：
+keyword / page / pageSize / policyType / status / level / projectId / monitorType / isPreset / channel / startTime / endTime。
+后果：除了 `/metrics`（当时还没走到取参）之外，**所有列表端点一律 500**。
+
+修法：新增 `App\Support\Query::get()`，明确走 PSR-7 的 `getQueryParams()`。
+**刻意不引入** `input()` 这种 Laravel 兼容别名 —— 名字一旦对齐，
+读代码的人会以为这里跑的是 Laravel 语义，而底层根本不是。
+
+#### H-3 6 个控制器的构造函数注入了未绑定的接口 → 全部无法实例化
+
+`AbstractController` 注入的是 `Hyperf\HttpServer\Contract\ResponseInterface`（**已绑定**），
+而 6 个子类注入的是 `Psr\Http\Message\ResponseInterface`（**纯 PSR-7，未绑定**）：
+
+    Entry "App\Controller\Alarm\AlarmMetricController" cannot be resolved:
+    Entry "Psr\Http\Message\ResponseInterface" cannot be resolved:
+    the class is not instantiable
+
+后果：6 个控制器**全部**无法实例化，19 个端点无一可用。
+已改为构造参数用绑定类型、方法返回类型仍用 PSR-7。
+
+### 严重级
+
+#### H-4 唯一键冲突被降级成 422 —— 上一轮 S-09 的修复在真实驱动下一直是坏的
+
+这是本轮**最值得记的一条**，因为它打的是我自己上一轮修复的脸。
+
+真连 MySQL 8.0.46 触发唯一键冲突时实测：
+
+    Hyperf\Database\Exception\UniqueConstraintViolationException
+      getCode() = '23000'                            ← **SQLSTATE 字符串**
+      errorInfo = ['23000', 1062, "Duplicate entry ..."]   ← errno 在 [1]
+
+S-09 的 `driverErrorCodes()` 写的是 `(int) $t->getCode()`，
+把 SQLSTATE `'23000'` 转成了整数 **23000**，于是 `=== 1062` 永不成立，
+「策略名称已存在」被降级成「参数校验失败」—— 用户看到参数错误，**运维查错方向**。
+
+为什么上一轮没发现：单测用 `new PDOException($msg, 1062)` 造异常，
+那个构造器第二个参数**确实**会写进 `getCode()` —— 
+**测试桩比真实驱动更「听话」，于是一条针对不存在行为的断言绿灯了**。
+
+S-09 想解决的问题本身是对的（MySQL 的 1062/1451/1452/1048 的 SQLSTATE 都是 `23000`，
+不能只按 `23` 前缀判重名），但**取 errno 的来源取错了**。
+已改为优先读 `errorInfo[1]`（PDO 的权威来源），
+并补了一组**用真实驱动形态**的回归测试（反射把 `Exception::$code` 写成 SQLSTATE 字符串）。
+
+修完实测：`driverErrorCodes()` 返回 `[1062,"23000"]` → **409「策略名称已存在」**。
+
+#### H-5 favicon 被鉴权拦成 401
+
+`AuthMiddleware` 是**全局**中间件，会拦下每个请求，
+而浏览器请求 `/favicon.ico` 不会带 Authorization 头 → 401。
+契约把 401 的适用范围定义为「`/api/alarm` 下的业务端点」，favicon 不属于。
+已改为按 `/api/` **路径前缀**放行 —— 新增业务端点时自动被覆盖，
+不会因为忘了加白名单而漏鉴权。
+
+### 三条测试桩与现实脱节（代码是对的，测试是错的）
+
+这三条与 H-1/H-2 同源，值得单列：
+
+| 测试 | 桩怎么写的 | 现实 |
+| --- | --- | --- |
+| `PolicyPayloadValidatorTest` | stub `input()` | 生产读 `getQueryParams()` |
+| 同上（分页） | stub `input()` | 同上，`page/pageSize` 永远读到默认值 |
+| `PolicyPersistenceTest`（时间范围） | stub `input()` | 同上，`startTime>endTime` 永远测不到 |
+
+第三条尤其隐蔽：参数全变 null → 不触发校验 → `$this->fail()` 触发，
+看起来是「测试失败」，实际是「这条断言从建立起就没生效过」。
+
+另外两条 E2E 期望也写错了（**实现是对的**）：
+
+- copy 端点：契约 ⑦ 规定响应体**只有** `{id, name}`，
+  我却按「响应里就该有 status/creatorName」断言 —— status 确实为 0、creatorName 确实归位，只是要在详情里读。
+- `POST /histories/{id}/handle` 传不存在的 id：契约 ⑱ 第 1 条「历史不存在 → 404」**排在最前**，
+  action 校验在之后。拿不存在的 id 测「非法 action → 422」永远拿不到 422。
+- 短信渠道接收人：`ChannelValidator` 明确要求**纯大陆手机号**，
+  我写的 `'sms:13800000000'` 带前缀，被正确地拒了。
+
+**断言必须贴着契约，不能贴着想象。**
+
+### 端到端覆盖
+
+| 分组 | 覆盖 |
+| --- | --- |
+| 鉴权 | 无 token → 401；错 token → 401；`ALARM_STATIC_TOKENS` 未配置 → fail-closed |
+| ⑧ 指标 | 38 条 / 15-9-5-9 / 唯一键无重复 / 每条 10 字段 / `policyType`+`namespace` 筛选 |
+| ⑨ 条件模板 | 7 条预置，含「流量断流」 |
+| ③④⑤⑦ 策略 | 创建 / 列表 / 详情 / 复制 / 更新 / 启停 / 删除，逐个断言**值真的落库**而非只回显 |
+| 409 | 重名、已启用删除、模板被引用 —— HTTP 状态码也必须是 409 |
+| 422 | `objectType` 与 `objectIds` 不匹配、指标不存在、缺 `status`、非法 action |
+| ⑩⑪⑫⑬ 通知模板 | 增删改查 + 绑定到策略（`channels` 无 cast 的真实路径）+ 引用中删除 409 |
+| ⑭⑮ 历史 | 列表 / 处理 / 重复处理 409 / 404 优先于 422 |
+| ⑯ favicon | 概览 + favicon 不走鉴权 |
+
+### 本轮最终状态
+
+- 后端测试：**260 个 / 740 断言全绿**
+- HTTP 端到端：**60 条断言全绿**
+- 运行期验证：**15 项全过**
+- 迁移：8 个 `up()` 幂等，`down()`/`up()` 可回滚可恢复
+
+### 仍未验证
+
+- **告警引擎**：触发 / 去重 / 投递。本项目只做管理面，不含引擎，
+  种子历史是直接写库造的，测的是**处理**路径不是**产生**路径。
+- **10 个新指标的 `defaultThreshold`**：仍未经真实监控数据校准。
+- **前端 ↔ 后端联调**：本轮只验了后端，前端基线（lint / tsc / 449 测试 / build）
+  是上一轮的结果，未与本轮后端改动一起重跑。
+
+VERDICT: PASS
