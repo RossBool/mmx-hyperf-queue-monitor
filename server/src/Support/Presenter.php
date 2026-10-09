@@ -37,6 +37,14 @@ class Presenter
             // R-JSON-2：唯一声明为非空 int[] 的 JSON 字段，DB NULL -> []
             'notificationTemplateIds' => self::intList($policy->notification_template_ids),
             'conditionTemplateId' => $policy->condition_template_id,
+            // v1.1 无数据检测（契约 §2.3）
+            // ⚠️ 非采集静默策略这两个字段恒为 null，**不返回 0**（§0.6 R-JSON-1）。
+            //    「0 表示不设置」是一个只有本项目自己懂的约定，
+            //    一旦有第二个消费方（比如告警引擎）就会变成 bug 温床。
+            'targetType' => $policy->target_type === null ? null : (int) $policy->target_type,
+            'targetFreshnessMinutes' => $policy->target_freshness_minutes === null
+                ? null
+                : (int) $policy->target_freshness_minutes,
             'creatorName' => $policy->creator_name,
             'createdAt' => Time::formatOrEmpty($policy->created_at),
             'updatedAt' => Time::formatOrEmpty($policy->updated_at),
@@ -78,11 +86,27 @@ class Presenter
             'metricNameCn' => $condition->metric_name_cn,
             'unit' => $condition->unit,
             'operator' => $condition->operator,
-            'threshold' => (float) $condition->threshold,
+            // ⚠️ 不能无脑 `(float)`：PHP 的 `(float) null === 0.0`。
+            //    采集静默条件（policyType=5）的 threshold 按契约恒为 NULL，
+            //    强转后会变成 0 —— 而 0 对普通条件是**完全合法的阈值**
+            //    （「CPU 使用率 > 0」），两者在响应里长得一模一样。
+            //    前端拿到 0 会把它填进阈值输入框，用户以为配了 0，
+            //    实际引擎看到的是 NULL，语义已经丢了。
+            'threshold' => $condition->threshold === null ? null : (float) $condition->threshold,
             'period' => $condition->period,
             'continuity' => $condition->continuity,
             'level' => $condition->level,
             'frequency' => $condition->frequency,
+            // v1.1 相对判据（契约 §1.5.1）
+            // ⚠️ compareMode 恒有值：DB 里是 NULL 的存量行归一化成 'absolute'，
+            //    而不是返回 null。理由是前端的条件编辑器要按它分叉渲染，
+            //    让前端处理 null 分支等于把契约的不确定性外泄给每个调用方。
+            //    baselineType / baselineCount 在 absolute 模式下恒为 null。
+            'compareMode' => $condition->compare_mode ?? 'absolute',
+            'baselineType' => $condition->compare_mode === 'relative' ? $condition->baseline_type : null,
+            'baselineCount' => $condition->compare_mode === 'relative' && $condition->baseline_type === 'period'
+                ? (int) $condition->baseline_count
+                : null,
         ];
     }
 
@@ -195,7 +219,10 @@ class Presenter
             $condition['id'] = 0;
             $condition['metricNameCn'] = (string) ($condition['metricNameCn'] ?? '');
             $condition['unit'] = (string) ($condition['unit'] ?? '');
-            $condition['threshold'] = (float) $condition['threshold'];
+            // 同上：null 必须保持 null
+            $condition['threshold'] = $condition['threshold'] === null
+                ? null
+                : (float) $condition['threshold'];
             $result[] = $condition;
         }
         usort($result, static fn (array $a, array $b): int => ($a['sort'] ?? 0) <=> ($b['sort'] ?? 0));
