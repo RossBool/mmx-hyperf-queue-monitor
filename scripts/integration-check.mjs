@@ -183,6 +183,70 @@ console.log('\n【8】前端 TS 类型 vs 真响应字段')
   console.log(`      声明 ${declKeys.length} 个 / 实际 ${realKeys.length} 个`)
 }
 
+// ── v1.1：相对判据 + 采集静默的真实字段对齐 ─────────────────────────
+// 为什么单独立一段：v1.1 新增了 5 个字段。泛化的「字段存在性」检查看不出
+// number vs string 的漂移 —— PDO 某些配置下会把 SMALLINT/DECIMAL 回读成
+// 字符串，JSON 里 `"2"` 和 `2` 肉眼一样，但前端 `=== 2` 会静默失败。
+console.log('\n【9】v1.1 相对判据 + 采集静默：真响应 vs 前端类型')
+
+const v11Cond = {
+  sort: 1, metricNamespace: 'CVM', metricName: 'CpuUtilizationRate',
+  operator: '>', threshold: 80, period: 5, continuity: 3, level: 2, frequency: 15,
+  compareMode: 'relative', baselineType: 'period', baselineCount: 2,
+}
+const { json: v11Rel } = await raw('POST', '/api/alarm/policies', {
+  name: `联调相对-${Date.now()}`, policyType: 2, monitorType: 1, enabled: 1,
+  objectType: 2, objectIds: [8801, 8802], conditionLogic: 1, conditions: [v11Cond],
+})
+if (v11Rel?.code === 0) {
+  const { json: relDetail } = await raw('GET', `/api/alarm/policies/${v11Rel.data.id}`)
+  const c = relDetail.data.conditions[0]
+  const ty = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v)
+  check('v1.1 compareMode 是 string', ty(c.compareMode) === 'string', `实际 ${ty(c.compareMode)} = ${JSON.stringify(c.compareMode)}`)
+  check('v1.1 baselineType 是 string', ty(c.baselineType) === 'string', `实际 ${ty(c.baselineType)} = ${JSON.stringify(c.baselineType)}`)
+  check('v1.1 baselineCount 是 number', ty(c.baselineCount) === 'number', `实际 ${ty(c.baselineCount)} = ${JSON.stringify(c.baselineCount)}`)
+  check('v1.1 baselineCount 数值正确', c.baselineCount === 2, `实际 ${c.baselineCount}`)
+  check('v1.1 relative 下 threshold 仍是 number', ty(c.threshold) === 'number', `实际 ${ty(c.threshold)}`)
+  check('v1.1 相对判据回读值与提交一致',
+    c.compareMode === 'relative' && c.baselineType === 'period' && c.baselineCount === 2,
+    `实际 ${c.compareMode}/${c.baselineType}/${c.baselineCount}`)
+
+  const { json: v11Silence } = await raw('POST', '/api/alarm/policies', {
+    name: `联调静默-${Date.now()}`, policyType: 5, monitorType: 1, enabled: 1,
+    objectType: 2, objectIds: [8801], conditionLogic: 1,
+    targetType: 1, targetFreshnessMinutes: 45,
+    conditions: [{ sort: 1, period: 5, continuity: 1, level: 2, frequency: 15 }],
+  })
+  if (v11Silence?.code === 0) {
+    const { json: sd } = await raw('GET', `/api/alarm/policies/${v11Silence.data.id}`)
+    const d = sd.data
+    check('v1.1 targetType 是 number', ty(d.targetType) === 'number', `实际 ${ty(d.targetType)} = ${JSON.stringify(d.targetType)}`)
+    check('v1.1 targetFreshnessMinutes 是 number', ty(d.targetFreshnessMinutes) === 'number', `实际 ${ty(d.targetFreshnessMinutes)} = ${JSON.stringify(d.targetFreshnessMinutes)}`)
+    check('v1.1 targetFreshnessMinutes 数值正确', d.targetFreshnessMinutes === 45, `实际 ${d.targetFreshnessMinutes}`)
+    check('v1.1 静默条件 metricNamespace 为 null', d.conditions[0].metricNamespace === null, `实际 ${JSON.stringify(d.conditions[0].metricNamespace)}`)
+    check('v1.1 静默条件 threshold 为 null', d.conditions[0].threshold === null, `实际 ${JSON.stringify(d.conditions[0].threshold)}`)
+
+    // 非静默策略：两个字段必须是 null 而非 0。
+    // ⚠️ 这里要用 relDetail（相对判据策略），不是 sd（静默策略）——
+    //    拿错对象会让断言「看起来失败」，但后端其实是对的。
+    //    「0 表示不设置」是只有后端自己懂的约定；前端 `d.targetType !== null`
+    //    在 0 语义下会漏判，而 0 在契约里根本不是合法 targetType。
+    check('v1.1 非静默 targetType 为 null（非 0）', relDetail.data.targetType === null, `实际 ${JSON.stringify(relDetail.data.targetType)}`)
+    check('v1.1 非静默 targetFreshnessMinutes 为 null（非 0）', relDetail.data.targetFreshnessMinutes === null, `实际 ${JSON.stringify(relDetail.data.targetFreshnessMinutes)}`)
+
+    for (const id of [v11Silence.data.id]) {
+      await raw('POST', `/api/alarm/policies/${id}/status`, { status: 0 })
+      await raw('DELETE', `/api/alarm/policies/${id}`)
+    }
+  } else {
+    check('v1.1 创建静默策略', false, `code=${v11Silence?.code} msg=${v11Silence?.message}`)
+  }
+  await raw('POST', `/api/alarm/policies/${v11Rel.data.id}/status`, { status: 0 })
+  await raw('DELETE', `/api/alarm/policies/${v11Rel.data.id}`)
+} else {
+  check('v1.1 创建相对判据策略', false, `code=${v11Rel?.code} msg=${v11Rel?.message} errors=${JSON.stringify(v11Rel?.extra)}`)
+}
+
 console.log(`\n════ ${pass} 通过 / ${fail} 失败 ════`)
 if (fail) { console.log('失败项：'); failures.forEach(f => console.log('  - ' + f)) }
 process.exit(fail ? 1 : 0)
