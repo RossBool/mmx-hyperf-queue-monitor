@@ -305,14 +305,219 @@ ok200('⑯ GET /overview', req('GET', '/api/alarm/overview'),
   check('favicon.ico → 200', code === '200', `HTTP ${code}`)
 }
 
-// ── 11. 清理 ──────────────────────────────────────────────────────
-console.log('\n【11】清理')
+// ── 11. v1.1：相对判据（E 类）+ 采集静默（F 类）─────────────────────
+// 这两组用例走的是**真实 HTTP + 真实 MySQL**，覆盖 JSON 绑定 → 校验 → 落库 →
+// Presenter 归一化 → 详情回读 的完整往返。Service 层测试覆盖不到 Presenter 和
+// JSON 反序列化，这一段只有真跑才能发现（比如 NULL 变 ""、字段名大小写漂移）。
+console.log('\n【11】v1.1 相对判据 + 采集静默')
+
+const baseCond = () => ({
+  sort: 1, metricNamespace: 'CVM', metricName: 'CpuUtilizationRate',
+  operator: '>', threshold: 80, period: 5, continuity: 3, level: 2, frequency: 15,
+})
+
+// ① 环比相对判据：创建 → 回读 → 三字段一致
+let relId = null
+{
+  const r = req('POST', '/api/alarm/policies', {
+    body: {
+      name: `E2E相对环比-${Date.now()}`, policyType: 2, monitorType: 1, enabled: 1,
+      objectType: 2, objectIds: [8801, 8802],
+      conditionLogic: 1,
+      conditions: [{ ...baseCond(), compareMode: 'relative', baselineType: 'period', baselineCount: 2 }],
+    },
+  })
+  ok200('v1.1 创建相对判据策略', r, d => (typeof d?.id === 'number' ? '' : 'data.id 不是数字'))
+  if (r.http === 200) relId = r.body.data.id
+}
+if (relId) {
+  const d = req('GET', `/api/alarm/policies/${relId}`)
+  const c = d.body?.data?.conditions?.[0]
+  check('v1.1 详情回读 compareMode=relative', c?.compareMode === 'relative', `实际=${JSON.stringify(c?.compareMode)}`)
+  check('v1.1 详情回读 baselineType=period', c?.baselineType === 'period', `实际=${JSON.stringify(c?.baselineType)}`)
+  check('v1.1 详情回读 baselineCount=2', c?.baselineCount === 2, `实际=${JSON.stringify(c?.baselineCount)}`)
+  // ⚠️ baselineCount 必须回读为**数字**。PDO 在某些配置下会返回字符串 "2"，
+  //    前端 `=== 2` 就会静默失败 —— 这是最典型的「真跑才发现」的一类问题。
+  check('v1.1 baselineCount 是 number 而非 string', typeof c?.baselineCount === 'number', `实际类型=${typeof c?.baselineCount}`)
+}
+
+// ② 同比：day 不带 baselineCount
+{
+  const r = req('POST', '/api/alarm/policies', {
+    body: {
+      name: `E2E相对同比-${Date.now()}`, policyType: 2, monitorType: 1, enabled: 1,
+      objectType: 2, objectIds: [8801, 8802], conditionLogic: 1,
+      conditions: [{ ...baseCond(), compareMode: 'relative', baselineType: 'day' }],
+    },
+  })
+  ok200('v1.1 创建同比（day）策略', r, d => (typeof d?.id === 'number' ? '' : 'data.id 不是数字'))
+  if (r.http === 200) {
+    const c = req('GET', `/api/alarm/policies/${r.body.data.id}`).body?.data?.conditions?.[0]
+    check('v1.1 同比 baselineCount 归一化为 null', c?.baselineCount === null, `实际=${JSON.stringify(c?.baselineCount)}`)
+    req('POST', `/api/alarm/policies/${r.body.data.id}/status`, { body: { status: 0 } })
+    req('DELETE', `/api/alarm/policies/${r.body.data.id}`)
+  }
+}
+
+// ③ absolute 缺省：两个 baseline 字段必须是 null，**不是** 0 也不是 ""
+{
+  const r = req('POST', '/api/alarm/policies', {
+    body: {
+      name: `E2E绝对缺省-${Date.now()}`, policyType: 2, monitorType: 1, enabled: 1,
+      objectType: 2, objectIds: [8801, 8802], conditionLogic: 1, conditions: [baseCond()],
+    },
+  })
+  ok200('v1.1 缺省 absolute 策略', r, d => (typeof d?.id === 'number' ? '' : 'data.id 不是数字'))
+  if (r.http === 200) {
+    const c = req('GET', `/api/alarm/policies/${r.body.data.id}`).body?.data?.conditions?.[0]
+    check('v1.1 缺省 compareMode=absolute', c?.compareMode === 'absolute', `实际=${JSON.stringify(c?.compareMode)}`)
+    check('v1.1 缺省 baselineType=null', c?.baselineType === null, `实际=${JSON.stringify(c?.baselineType)}`)
+    check('v1.1 缺省 baselineCount=null', c?.baselineCount === null, `实际=${JSON.stringify(c?.baselineCount)}`)
+    req('POST', `/api/alarm/policies/${r.body.data.id}/status`, { body: { status: 0 } })
+    req('DELETE', `/api/alarm/policies/${r.body.data.id}`)
+  }
+}
+
+// ④ 非法组合必须 422，且错误路径精确
+{
+  const bad = [
+    ['relative 缺 baselineType', { compareMode: 'relative' }],
+    ['环比缺 baselineCount', { compareMode: 'relative', baselineType: 'period' }],
+    ['环比 baselineCount 越界', { compareMode: 'relative', baselineType: 'period', baselineCount: 61 }],
+    ['absolute 却带 baselineType', { compareMode: 'absolute', baselineType: 'day' }],
+    ['非法 baselineType', { compareMode: 'relative', baselineType: 'month' }],
+  ]
+  for (const [label, override] of bad) {
+    const r = req('POST', '/api/alarm/policies', {
+      body: {
+        name: `E2E非法-${Date.now()}`, policyType: 2, monitorType: 1, enabled: 1,
+        objectType: 2, objectIds: [8801, 8802], conditionLogic: 1,
+        conditions: [{ ...baseCond(), ...override }],
+      },
+    })
+    check(`v1.1 422 ${label}`, r.http === 422 && r.body?.code === 422,
+      `HTTP ${r.http} code=${r.body?.code} errors=${JSON.stringify(r.body?.extra?.errors)}`)
+    // ⚠️ extra.errors 是 **数组** [{field, message}]，不是以 field 为键的对象。
+    //    写成 Object.keys() 拿到的是下标 0/1/2，断言会「看起来失败」但其实是用错 API ——
+    //    这种假阴性会让人跑去查后端，而后端是好的。
+    const fields = (r.body?.extra?.errors ?? []).map((e) => e.field)
+    const condFields = fields.filter((f) => String(f).startsWith('conditions.0.'))
+    check(`v1.1 错误路径精确（${label}）`, condFields.length > 0,
+      `conditions.0.* 下的错误=${JSON.stringify(condFields)} 全部字段=${JSON.stringify(fields)}`)
+  }
+}
+
+// ⑤ 采集静默：policyType=5 + targetType + targetFreshnessMinutes
+let silenceId = null
+{
+  const r = req('POST', '/api/alarm/policies', {
+    body: {
+      name: `E2E采集静默-${Date.now()}`, policyType: 5, monitorType: 1, enabled: 1,
+      objectType: 2, objectIds: [8801, 8802], conditionLogic: 1,
+      targetType: 1, targetFreshnessMinutes: 30,
+      // 契约 §2.1 规则 3：policyType=5 时 6 个指标判据字段**全部必须缺省**。
+      // 判据在策略的 targetType / targetFreshnessMinutes 上，条件只保留告警属性。
+      conditions: [{ sort: 1, period: 5, continuity: 1, level: 2, frequency: 15 }],
+    },
+  })
+  ok200('v1.1 创建采集静默策略', r, d => (typeof d?.id === 'number' ? '' : 'data.id 不是数字'))
+  if (r.http === 200) {
+    silenceId = r.body.data.id
+    const d2 = req('GET', `/api/alarm/policies/${silenceId}`).body?.data
+    check('v1.1 静默 targetType 回读=1', d2?.targetType === 1, `实际=${JSON.stringify(d2?.targetType)}`)
+    check('v1.1 静默 targetFreshnessMinutes 回读=30', d2?.targetFreshnessMinutes === 30,
+      `实际=${JSON.stringify(d2?.targetFreshnessMinutes)}`)
+    check('v1.1 targetFreshnessMinutes 是 number', typeof d2?.targetFreshnessMinutes === 'number',
+      `实际类型=${typeof d2?.targetFreshnessMinutes}`)
+  }
+}
+
+// ⑥ 非静默策略的两个字段必须是 null（**不是 0**）
+if (relId) {
+  const d2 = req('GET', `/api/alarm/policies/${relId}`).body?.data
+  check('v1.1 非静默策略 targetType=null', d2?.targetType === null, `实际=${JSON.stringify(d2?.targetType)}`)
+  check('v1.1 非静默策略 targetFreshnessMinutes=null', d2?.targetFreshnessMinutes === null,
+    `实际=${JSON.stringify(d2?.targetFreshnessMinutes)}`)
+}
+
+// ⑦ 静默字段校验
+{
+  const bad = [
+    ['policyType=5 缺 targetType', { policyType: 5, targetFreshnessMinutes: 30 }],
+    ['policyType=5 缺 freshness', { policyType: 5, targetType: 1 }],
+    ['freshness 越界(4)', { policyType: 5, targetType: 1, targetFreshnessMinutes: 4 }],
+    ['freshness 越界(10081)', { policyType: 5, targetType: 1, targetFreshnessMinutes: 10081 }],
+    ['非法 targetType', { policyType: 5, targetType: 9, targetFreshnessMinutes: 30 }],
+  ]
+  for (const [label, override] of bad) {
+    const r = req('POST', '/api/alarm/policies', {
+      body: {
+        name: `E2E静默非法-${Date.now()}`, monitorType: 1, enabled: 1,
+        objectType: 2, objectIds: [8801], conditionLogic: 1,
+        conditions: [{ sort: 1, period: 5, continuity: 1, level: 2, frequency: 15 }],
+        ...override,
+      },
+    })
+    check(`v1.1 422 ${label}`, r.http === 422 && r.body?.code === 422,
+      `HTTP ${r.http} code=${r.body?.code} errors=${JSON.stringify(r.body?.extra?.errors)}`)
+  }
+  // 非静默策略**不允许**带静默字段
+  const r = req('POST', '/api/alarm/policies', {
+    body: {
+      name: `E2E非静默带静默字段-${Date.now()}`, policyType: 2, monitorType: 1, enabled: 1,
+      objectType: 2, objectIds: [8801, 8802], conditionLogic: 1, conditions: [baseCond()],
+      targetType: 1, targetFreshnessMinutes: 30,
+    },
+  })
+  check('v1.1 422 非静默策略带 targetType', r.http === 422 && r.body?.code === 422,
+    `HTTP ${r.http} code=${r.body?.code} errors=${JSON.stringify(r.body?.extra?.errors)}`)
+}
+
+// ⑧ 复制：相对判据字段必须跟着复制过去（漏一个就是静默的功能缺陷）
+if (relId) {
+  const r = req('POST', `/api/alarm/policies/${relId}/copy`, { body: {} })
+  ok200('v1.1 复制相对判据策略', r, d => (typeof d?.id === 'number' ? '' : 'data.id 不是 number'))
+  if (r.http === 200) {
+    const c = req('GET', `/api/alarm/policies/${r.body.data.id}`).body?.data?.conditions?.[0]
+    check('v1.1 复制保留 compareMode', c?.compareMode === 'relative', `实际=${JSON.stringify(c?.compareMode)}`)
+    check('v1.1 复制保留 baselineType', c?.baselineType === 'period', `实际=${JSON.stringify(c?.baselineType)}`)
+    check('v1.1 复制保留 baselineCount', c?.baselineCount === 2, `实际=${JSON.stringify(c?.baselineCount)}`)
+    req('POST', `/api/alarm/policies/${r.body.data.id}/status`, { body: { status: 0 } })
+    req('DELETE', `/api/alarm/policies/${r.body.data.id}`)
+  }
+}
+
+// ⑨ 更新：相对 → 绝对，baseline 必须被清空
+if (relId) {
+  const r = req('PUT', `/api/alarm/policies/${relId}`, {
+    body: {
+      name: `E2E相对改绝对-${Date.now()}`, policyType: 2, monitorType: 1, enabled: 1,
+      objectType: 2, objectIds: [8801, 8802], conditionLogic: 1,
+      conditions: [{ ...baseCond(), compareMode: 'absolute' }],
+    },
+  })
+  ok200('v1.1 更新：relative → absolute', r)
+  if (r.http === 200) {
+    const c = req('GET', `/api/alarm/policies/${relId}`).body?.data?.conditions?.[0]
+    check('v1.1 更新后 baselineType 已清空', c?.baselineType === null, `实际=${JSON.stringify(c?.baselineType)}`)
+    check('v1.1 更新后 baselineCount 已清空', c?.baselineCount === null, `实际=${JSON.stringify(c?.baselineCount)}`)
+  }
+}
+
+// ── 12. 清理 ──────────────────────────────────────────────────────
+console.log('\n【12】清理')
 {
   req('POST', `/api/alarm/policies/${policyId}/status`, { body: { status: 0 } })
   const r = req('DELETE', `/api/alarm/policies/${policyId}`)
   check('停用后可删除', r.http === 200 && r.body?.code === 0, `HTTP ${r.http} code=${r.body?.code}`)
   const d = req('DELETE', `/api/alarm/notification-templates/${ntId}`)
   check('解除引用后可删通知模板', d.http === 200 && d.body?.code === 0, `HTTP ${d.http} code=${d.body?.code}`)
+  for (const id of [relId, silenceId]) {
+    if (!id) continue
+    req('POST', `/api/alarm/policies/${id}/status`, { body: { status: 0 } })
+    const x = req('DELETE', `/api/alarm/policies/${id}`)
+    check('v1.1 策略停用后可删', x.http === 200 && x.body?.code === 0, `HTTP ${x.http} code=${x.body?.code}`)
+  }
 }
 
 console.log(`\n════ ${pass} 通过 / ${fail} 失败 ════`)
