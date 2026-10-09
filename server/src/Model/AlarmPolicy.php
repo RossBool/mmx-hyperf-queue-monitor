@@ -38,6 +38,8 @@ class AlarmPolicy extends Model
         'name', 'remark', 'monitor_type', 'policy_type', 'status', 'level', 'project_id',
         'object_type', 'object_ids', 'object_group_ids', 'object_filters', 'condition_logic',
         'notification_template_ids', 'condition_template_id', 'creator_id', 'creator_name',
+        // v1.1 无数据检测
+        'target_type', 'target_freshness_minutes',
     ];
 
     protected array $casts = [
@@ -50,6 +52,9 @@ class AlarmPolicy extends Model
         'object_type' => 'int',
         'condition_logic' => 'int',
         'condition_template_id' => 'int',
+        // v1.1：这两个列可为 NULL，cast 成 int 后仍是 null（Eloquent 对 null 不做转换）
+        'target_type' => 'int',
+        'target_freshness_minutes' => 'int',
         'creator_id' => 'int',
         // 'array'：DB NULL -> null（满足 R-JSON-1）
         'object_ids' => 'array',
