@@ -54,6 +54,7 @@ import {
   ALARM_OBJECT_TYPE_LIMITS,
   ALARM_OPERATOR,
   ALARM_POLICY_STATUS,
+  ALARM_POLICY_TYPE,
   ALARM_PRESET_FLAG,
   ALARM_PRESET_FLAG_LABEL,
 } from '@/types/alarm'
@@ -313,6 +314,90 @@ const operatorOptions = alarmOperatorOptions
 const frequencyOptions = alarmFrequencyOptions
 const logicOptions = alarmConditionLogicOptions
 const periodOptions = alarmPeriodOptions
+
+/**
+ * v1.1 相对判据（E 类）选项。
+ *
+ * 阈值量纲在 relative 模式下变成**百分比**，所以两套判据不能共用一个
+ * 「阈值」输入框的文案 —— 同一个 80，在 absolute 下是「80% CPU」，
+ * 在 relative 下是「偏离基线 80%」。文案含糊会直接导致误配。
+ */
+/** 静默检测的目标类型。值域与 objectType 相同是巧合，语义不同，不合并。 */
+const silenceTargetOptions = [
+  { value: 1, label: '云服务器 CVM' },
+  { value: 2, label: '负载均衡 CLB' },
+  { value: 3, label: '云数据库 MySQL' },
+  { value: 4, label: 'Web 应用 WEB' },
+] as const
+
+/** 当前是否采集静默策略。表单区的显隐全部由它驱动。 */
+const isSilencePolicy = computed(() => values.value.policyType === ALARM_POLICY_TYPE.SILENCE)
+
+const compareModeOptions = [
+  { value: 'absolute', label: '绝对阈值' },
+  { value: 'relative', label: '相对基线偏离' },
+] as const
+
+const baselineTypeOptions = [
+  { value: 'period', label: '环比（与前 N 个周期比）' },
+  { value: 'day', label: '同比昨日' },
+  { value: 'week', label: '同比上周' },
+] as const
+
+/** 取第 index 条条件。联动清空时要读旧值，所以不能只看 patch。 */
+function conditionAt(index: number): PolicyConditionFormItem | undefined {
+  return values.value.conditions[index]
+}
+
+/**
+ * 相对模式下阈值输入框的单位提示 —— 跟着判据模式变，不是跟着指标变。
+ *
+ * ⚠️ 参数类型是 `Pick<...>` 而不是 `PolicyConditionFormItem`：
+ *    模板里 v-for 的 `condition` 被 vue-tsc 推成 `AlarmPolicyCondition`（丢了 `_key`），
+ *    收窄到实际用到的 4 个字段，既能通过类型检查，也顺带说明这两个函数
+ *    **只读 v1.1 字段、不碰 UI 态**。
+ */
+type RelativeFields = Pick<PolicyConditionFormItem, 'compareMode' | 'baselineType' | 'baselineCount' | 'period'>
+
+function relativeThresholdHint(condition: RelativeFields): string {
+  if (condition.compareMode !== 'relative')
+    return ''
+  if (condition.baselineType === 'day')
+    return '相对昨日同期的偏离百分比'
+  if (condition.baselineType === 'week')
+    return '相对上周同期的偏离百分比'
+  return `相对前 ${condition.baselineCount ?? 1} 个 ${condition.period} 分钟周期的偏离百分比`
+}
+
+/** 相对判据面板是否展开。只有 relative 才需要展示基线配置。 */
+function relativePanelVisible(condition: Pick<PolicyConditionFormItem, 'compareMode'>): boolean {
+  return condition.compareMode === 'relative'
+}
+
+/**
+ * 切基线类型：切到同比必须**清掉** baselineCount。
+ *
+ * 契约 §2.1 规则 2：baselineType=day/week 时 baselineCount 必须为 null。
+ * 只隐藏不清理的话，隐藏的输入框里的值会跟着提交，被 422 拒掉 ——
+ * 而用户在界面上根本看不到那个值，无从修改。
+ */
+function onBaselineTypeChange(index: number, value: string): void {
+  const type = value as 'period' | 'day' | 'week'
+  updateCondition(index, {
+    baselineType: type,
+    baselineCount: type === 'period' ? (conditionAt(index)?.baselineCount ?? 1) : undefined,
+  })
+}
+
+/** 关掉相对判据时三个字段全清 —— absolute 时两个 baseline 必须缺省（契约 §2.1 规则 1）。 */
+function onCompareModeChange(index: number, value: string): void {
+  const mode = value as 'absolute' | 'relative'
+  updateCondition(index, {
+    compareMode: mode,
+    baselineType: mode === 'relative' ? 'period' : undefined,
+    baselineCount: mode === 'relative' ? 1 : undefined,
+  })
+}
 
 const continuityOptions = computed(() =>
   Array.from({ length: MAX_CONTINUITY - MIN_CONTINUITY + 1 }, (_, index) => MIN_CONTINUITY + index),
@@ -1184,6 +1269,65 @@ function cancelLeave() {
           </CardContent>
         </Card>
 
+        <!-- v1.1 采集静默（F 类）------------------------------------------
+             采集静默**不绑指标**，判据是「目标的数据多久没上报」，
+             所以它是一张独立的卡片，放在触发条件卡片**之前**：
+             静默策略的「触发条件」只剩告警属性，指标选择器整块不适用。
+             targetType 和 objectType 值域相同但语义不同，不做合并。 -->
+        <Card v-if="isSilencePolicy">
+          <CardHeader>
+            <CardTitle class="text-base">
+              静默检测
+            </CardTitle>
+            <CardDescription>
+              采集静默不绑定指标，判据是「目标的数据多久没有上报」。
+              阈值由告警引擎按心跳表判定，本项目只负责配置与存储。
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div class="space-y-2">
+                <Label>监控目标类型</Label>
+                <Select
+                  :model-value="String(values.targetType ?? '')"
+                  @update:model-value="(v) => setValue('targetType', Number(v) as never)"
+                >
+                  <SelectTrigger class="w-full">
+                    <SelectValue placeholder="选择目标类型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem
+                      v-for="option in silenceTargetOptions"
+                      :key="option.value"
+                      :value="String(option.value)"
+                    >
+                      {{ option.label }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p class="text-xs text-muted-foreground">
+                  指「监控哪一类目标的数据新鲜度」，与上面的告警对象类型不是一回事。
+                </p>
+              </div>
+
+              <div class="space-y-2">
+                <Label>静默时长（分钟）</Label>
+                <Input
+                  :model-value="String(values.targetFreshnessMinutes ?? '')"
+                  type="number"
+                  min="5"
+                  max="10080"
+                  placeholder="30"
+                  @update:model-value="(v) => setValue('targetFreshnessMinutes', v === '' ? null : Number(v))"
+                />
+                <p class="text-xs text-muted-foreground">
+                  数据静默超过该分钟数即告警，范围 5-10080（5 分钟 ~ 7 天）。
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle class="text-base">
@@ -1327,6 +1471,79 @@ function cancelLeave() {
                     </div>
                     <p class="text-xs text-muted-foreground">
                       单位 {{ condition.unit || '—' }}，可填负数，最多 4 位小数
+                    </p>
+                  </div>
+
+                  <!-- v1.1 相对判据（E 类）--------------------------------------
+                       放在统计粒度之前：判据模式决定了「阈值」怎么解释，
+                       放在阈值后面会让用户先看到一个含义会变的输入框。 -->
+                  <div class="space-y-2">
+                    <Label>判据模式</Label>
+                    <Select
+                      :model-value="condition.compareMode ?? 'absolute'"
+                      @update:model-value="(v) => onCompareModeChange(index, String(v))"
+                    >
+                      <SelectTrigger class="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="option in compareModeOptions"
+                          :key="option.value"
+                          :value="option.value"
+                        >
+                          {{ option.label }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div
+                    v-if="relativePanelVisible(condition)"
+                    class="space-y-3 rounded-lg border border-dashed p-3"
+                  >
+                    <p class="text-xs text-muted-foreground">
+                      相对判据下「阈值」表示<strong>偏离基线的百分比</strong>，不是指标原单位。
+                      基线取 0 或无数据时该条件不命中。
+                    </p>
+
+                    <div class="space-y-2">
+                      <Label>基线类型</Label>
+                      <Select
+                        :model-value="String(condition.baselineType ?? 'period')"
+                        @update:model-value="(v) => onBaselineTypeChange(index, String(v))"
+                      >
+                        <SelectTrigger class="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem
+                            v-for="option in baselineTypeOptions"
+                            :key="option.value"
+                            :value="option.value"
+                          >
+                            {{ option.label }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div v-if="condition.baselineType === 'period'" class="space-y-2">
+                      <Label>前移周期数</Label>
+                      <Input
+                        :model-value="String(condition.baselineCount ?? 1)"
+                        type="number"
+                        min="1"
+                        max="60"
+                        @update:model-value="(v) => updateCondition(index, { baselineCount: Number(v) })"
+                      />
+                      <p class="text-xs text-muted-foreground">
+                        与前 {{ condition.baselineCount ?? 1 }} 个 {{ condition.period }} 分钟周期比较，范围 1-60。
+                      </p>
+                    </div>
+
+                    <p class="text-xs text-muted-foreground">
+                      {{ relativeThresholdHint(condition) }}
                     </p>
                   </div>
 
