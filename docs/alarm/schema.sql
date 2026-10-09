@@ -92,6 +92,9 @@ CREATE TABLE `alarm_policy` (
   `created_at`               DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间 YYYY-MM-DD HH:mm:ss',
   `updated_at`               DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间 YYYY-MM-DD HH:mm:ss',
 
+  -- v1.1 无数据检测（F 类）：仅 policyType=5「采集静默」时有值，其余为 NULL
+  `target_type`             TINYINT UNSIGNED  NULL  COMMENT '静默检测的目标类型 1CVM 2CLB 3MySQL 4WEB，仅 policyType=5 时有值',
+  `target_freshness_minutes` SMALLINT UNSIGNED  NULL  COMMENT '数据静默超过该分钟数即告警 5-10080，仅 policyType=5 时有值',
   PRIMARY KEY (`id`),
   -- 名称唯一：配合"硬删除"策略，无需 is_deleted 维度
   UNIQUE KEY `uk_policy_name` (`name`),
@@ -111,9 +114,13 @@ CREATE TABLE `alarm_policy` (
   CONSTRAINT `ck_policy_remark_len` CHECK (CHAR_LENGTH(`remark`) <= 500),
   CONSTRAINT `ck_policy_status`     CHECK (`status` IN (0, 1)),
   CONSTRAINT `ck_policy_monitor_type` CHECK (`monitor_type` IN (1, 2, 3, 4, 5)),
-  CONSTRAINT `ck_policy_policy_type`  CHECK (`policy_type`  IN (1, 2, 3, 4)),
+  CONSTRAINT `ck_policy_policy_type`  CHECK (`policy_type`  IN (1, 2, 3, 4, 5)),
   CONSTRAINT `ck_policy_level`      CHECK (`level` IN (1, 2, 3)),
   CONSTRAINT `ck_policy_object_type` CHECK (`object_type` IN (1, 2, 3, 4)),
+  -- v1.1 无数据检测（F 类）。单行表达式：MySQL 8.0 的 ADD CHECK 拒绝跨行（1064）。
+  CONSTRAINT `ck_policy_target_type`  CHECK (`target_type` IS NULL OR `target_type` BETWEEN 1 AND 4),
+  CONSTRAINT `ck_policy_freshness`    CHECK (`target_freshness_minutes` IS NULL OR `target_freshness_minutes` BETWEEN 5 AND 10080),
+  CONSTRAINT `ck_policy_silence_pair` CHECK (( (`policy_type` = 5 AND `target_type` IS NOT NULL AND `target_freshness_minutes` IS NOT NULL) OR (`policy_type` <> 5 AND `target_type` IS NULL AND `target_freshness_minutes` IS NULL) )),
   CONSTRAINT `ck_policy_condition_logic` CHECK (`condition_logic` IN (1, 2))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
   COMMENT='告警策略主表（硬删除；子条件级联物理删除）';
@@ -131,16 +138,20 @@ CREATE TABLE `alarm_policy_condition` (
   `id`                BIGINT UNSIGNED   NOT NULL AUTO_INCREMENT COMMENT '条件 id',
   `policy_id`         BIGINT UNSIGNED   NOT NULL                COMMENT '所属策略 id',
   `sort`              SMALLINT UNSIGNED NOT NULL DEFAULT 1      COMMENT '策略内排序，1-4 连续升序',
-  `metric_namespace`  VARCHAR(64)       NOT NULL                COMMENT '指标命名空间 CVM/WEB/CLB/MYSQL，见 metrics.md',
-  `metric_name`       VARCHAR(64)       NOT NULL                COMMENT '指标英文名，见 metrics.md',
+  `metric_namespace`  VARCHAR(64)                COMMENT '指标命名空间 CVM/WEB/CLB/MYSQL，见 metrics.md',
+  `metric_name`       VARCHAR(64)                COMMENT '指标英文名，见 metrics.md',
   `metric_name_cn`    VARCHAR(64)       NOT NULL DEFAULT ''     COMMENT '指标中文名（由指标字典回填，服务端生成）',
   `unit`              VARCHAR(16)       NOT NULL DEFAULT ''     COMMENT '指标单位（由指标字典回填，服务端生成）',
-  `operator`          VARCHAR(2)        NOT NULL                COMMENT '比较关系 > >= < <= == !=（原样存取，禁本地化）',
-  `threshold`         DECIMAL(20, 4)    NOT NULL                COMMENT '阈值，可负数，最多 4 位小数',
+  `operator`          VARCHAR(2)                COMMENT '比较关系 > >= < <= == !=（原样存取，禁本地化）',
+  `threshold`         DECIMAL(20, 4)                COMMENT '阈值，可负数，最多 4 位小数',
   `period`            SMALLINT UNSIGNED NOT NULL                COMMENT '统计粒度（分钟）1/5/10/30/60',
   `continuity`        TINYINT UNSIGNED  NOT NULL                COMMENT '持续周期（数据点数）1-10',
   `level`             TINYINT UNSIGNED  NOT NULL DEFAULT 3      COMMENT '该条件命中后的告警等级 1紧急 2严重 3提示',
   `frequency`         SMALLINT UNSIGNED NOT NULL DEFAULT 0      COMMENT '重复通知频率（分钟）0/5/15/30/60/180/360/720/1440，0=不重复',
+  -- v1.1 相对判据：三个字段**全部可空且无默认值**，NULL 即 v1.0 行为（absolute）
+  `compare_mode`      VARCHAR(16)        NULL                COMMENT '判据模式 absolute=绝对阈值(默认) relative=相对基线偏离',
+  `baseline_type`     VARCHAR(16)        NULL                COMMENT '基线类型 period=环比 day=同比昨日 week=同比上周，仅 relative 时有值',
+  `baseline_count`    SMALLINT UNSIGNED  NULL                COMMENT '环比前移的统计周期数 1-60，仅 baseline_type=period 时有值',
   `created_at`        DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at`        DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
 
@@ -158,9 +169,19 @@ CREATE TABLE `alarm_policy_condition` (
   CONSTRAINT `ck_condition_period`     CHECK (`period` IN (1, 5, 10, 30, 60)),
   CONSTRAINT `ck_condition_continuity` CHECK (`continuity` BETWEEN 1 AND 10),
   CONSTRAINT `ck_condition_level`      CHECK (`level` IN (1, 2, 3)),
-  CONSTRAINT `ck_condition_frequency`  CHECK (`frequency` IN (0, 5, 15, 30, 60, 180, 360, 720, 1440))
+  CONSTRAINT `ck_condition_frequency`  CHECK (`frequency` IN (0, 5, 15, 30, 60, 180, 360, 720, 1440)),
+  -- v1.1 相对判据（E 类）。单行表达式：MySQL 8.0 的 ADD CHECK 拒绝跨行（1064）。
+  -- 注：上面 ck_condition_operator 等对 NULL 取值为「通过」（SQL 三值逻辑里
+  --     NULL IN (...) 是 NULL，CHECK 只在结果为 FALSE 时拒绝），所以采集静默
+  --     条件把 operator/threshold 归一化成 NULL 不需要改动这些约束。
+  CONSTRAINT `ck_condition_compare_mode`   CHECK (`compare_mode` IS NULL OR `compare_mode` IN ('absolute', 'relative')),
+  CONSTRAINT `ck_condition_baseline_type`  CHECK (`baseline_type` IS NULL OR `baseline_type` IN ('period', 'day', 'week')),
+  CONSTRAINT `ck_condition_baseline_count` CHECK (`baseline_count` IS NULL OR (`baseline_count` BETWEEN 1 AND 60)),
+  CONSTRAINT `ck_condition_relative_pair`  CHECK (( (`compare_mode` = 'relative' AND `baseline_type` IS NOT NULL AND `baseline_count` IS NOT NULL) OR (`compare_mode` = 'relative' AND `baseline_type` IN ('day', 'week') AND `baseline_count` IS NULL) OR ((`compare_mode` IS NULL OR `compare_mode` = 'absolute') AND `baseline_type` IS NULL AND `baseline_count` IS NULL) ))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-  COMMENT='告警策略触发条件（每策略 1-4 条，随策略硬删除级联清理）';
+  COMMENT='告警策略触发条件（每策略 1-4 条，随策略硬删除级联清理）。
+          v1.1 起 metric_namespace/metric_name/operator/threshold 可空：
+          policyType=5（采集静默）的条件按契约不含任何指标判据，这 4 列恒为 NULL。';
 
 -- -----------------------------------------------------------------------------
 -- 3. alarm_condition_template 触发条件模板表
@@ -340,6 +361,23 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- =============================================================================
 
 -- --- 3 条预置通知模板（is_preset=1，不可删除） --------------------------------
+-- ---------------------------------------------------------------------------
+-- v1.1 采集心跳表
+-- ---------------------------------------------------------------------------
+-- 本项目**不写这张表**。它由采集侧（agent / 上报进程）写入，告警侧只读。
+-- 没有它就无法判定 F 类「无数据」故障：QPS=0 究竟是「没流量」还是「采集挂了」，
+-- 同一个读数对应两种完全相反的结论。判定逻辑属于告警引擎，引擎不在本项目范围内。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `alarm_target_heartbeat` (
+  `target_type`    TINYINT UNSIGNED NOT NULL                COMMENT '目标类型 1CVM 2CLB 3MySQL 4WEB',
+  `target_id`      VARCHAR(128)     NOT NULL                COMMENT '目标唯一标识',
+  `last_metric_at` DATETIME         NULL                    COMMENT '最后一次收到该目标指标数据的时间；NULL=从未上报（最强的静默信号）',
+  `updated_at`     DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (`target_type`, `target_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='采集心跳表：由采集侧写入，告警侧只读';
+
+-- 预置通知模板种子
 INSERT IGNORE INTO `alarm_notification_template`
   (`name`, `remark`, `channels`, `is_preset`, `creator_id`, `creator_name`) VALUES
   ('系统预置-邮件通知', '系统内置，仅邮件通知，接收人需自行补充',
