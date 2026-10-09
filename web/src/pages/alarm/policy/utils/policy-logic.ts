@@ -38,6 +38,7 @@ import type {
   AlarmPolicyListQuery,
   AlarmPolicyStatus,
   AlarmPolicyType,
+  AlarmSilenceTargetType,
 } from '@/types/alarm'
 
 import {
@@ -46,6 +47,7 @@ import {
   ALARM_OBJECT_TYPE_LIMITS,
   ALARM_OPERATOR,
   ALARM_POLICY_STATUS,
+  ALARM_POLICY_TYPE,
 } from '@/types/alarm'
 
 // ============================================================================
@@ -191,8 +193,34 @@ export function formatThreshold(value: number): string {
  * 例：`CPU 使用率 > 80%`；缺中文名时回落到 `CVM.CpuUtilizationRate`。
  */
 export function describeCondition(condition: AlarmPolicyCondition): string {
+  // v1.1 采集静默条件：6 个指标判据字段按契约恒为 null。
+  // 不特判的话会渲染出 `null < nullnull%` 这种字符串 —— 出现在详情页和
+  // 列表摘要上，看起来像数据坏了，而不是像「这条策略本来就不看指标」。
+  if (!condition.metricNamespace && !condition.metricName) {
+    const level = condition.level
+    return `数据静默超过 ${condition.continuity} 个数据点（等级 ${level}）`
+  }
   const metric = condition.metricNameCn || `${condition.metricNamespace}.${condition.metricName}`
   return `${metric} ${condition.operator} ${formatThreshold(condition.threshold)}${condition.unit ?? ''}`
+}
+
+/**
+ * 条件的判据说明，带上 v1.1 的相对判据语义。
+ *
+ * 相对模式下阈值是**百分比**，直接拼在指标单位后面会得到
+ * 「CPU 使用率 > 30%」这种**错误但看起来很合理**的文案 ——
+ * 用户会以为阈值还是 CPU 百分比。契约要求这里必须点破。
+ */
+export function describeConditionCriteria(condition: AlarmPolicyCondition): string {
+  const base = describeCondition(condition)
+  if (condition.compareMode !== 'relative')
+    return base
+  const baseline = condition.baselineType === 'day'
+    ? '昨日同期'
+    : condition.baselineType === 'week'
+      ? '上周同期'
+      : `前 ${condition.baselineCount ?? 1} 个 ${condition.period} 分钟周期`
+  return `${base}（相对 ${baseline} 偏离 ${formatThreshold(condition.threshold)}%）`
 }
 
 /**
@@ -620,6 +648,15 @@ export interface PolicyFormValues {
   callbackUrl: string
   conditionTemplateId: number
   status: AlarmPolicyStatus
+
+  // ── v1.1 无数据检测（F 类）──────────────────────────────────────────
+  // 只在 policyType=5（采集静默）时有值。非静默策略**必须是 undefined**，
+  // 不能填 0：`0` 不是合法的 targetType（契约取值 1-4），
+  // 填了会被 422 挡下，而错误信息指向 targetType，和用户填的表单对不上。
+  /** 静默检测的目标类型。`null`/`undefined` = 未启用。 */
+  targetType?: AlarmSilenceTargetType | null
+  /** 数据静默超过该分钟数即告警（5-10080）。`null`/`undefined` = 未启用。 */
+  targetFreshnessMinutes?: number | null
 }
 
 /** 空表单的初始值（新建态）。 */
@@ -640,6 +677,8 @@ export function createEmptyPolicyFormValues(): PolicyFormValues {
     callbackUrl: '',
     conditionTemplateId: 0,
     status: ALARM_POLICY_STATUS.DISABLED,
+    targetType: null,
+    targetFreshnessMinutes: null,
   }
 }
 
@@ -658,6 +697,12 @@ export function createEmptyCondition(key: string, sort: number): PolicyCondition
     continuity: 1,
     level: 3,
     frequency: 0,
+    // v1.1：显式给出默认值，而不是留 undefined。
+    // 后端把缺省归一化成 absolute，两边行为一致；
+    // 但表单里显示 undefined 会让「相对判据」开关初始状态不确定。
+    compareMode: 'absolute',
+    baselineType: undefined,
+    baselineCount: undefined,
   }
 }
 
@@ -681,6 +726,18 @@ export function toConditionPayload(
     continuity: condition.continuity,
     level: condition.level,
     frequency: condition.frequency,
+    // v1.1 相对判据。absolute 时两个 baseline 字段必须**省略**（不是 null）——
+    // 契约 §2.1 规则 1：absolute 时两者必须缺省。发 null 也会被 422 拒。
+    ...(condition.compareMode === 'relative'
+      ? {
+          compareMode: 'relative' as const,
+          baselineType: condition.baselineType,
+          // 同比（day/week）不带 baselineCount，环比（period）才带
+          ...(condition.baselineType === 'period'
+            ? { baselineCount: condition.baselineCount }
+            : {}),
+        }
+      : {}),
   }
 }
 
@@ -699,6 +756,12 @@ export function toConditionFormItem(condition: AlarmPolicyCondition, key: string
     continuity: condition.continuity,
     level: condition.level,
     frequency: condition.frequency,
+    // v1.1 相对判据。存量策略（v1.0 建的数据）后端会归一化成
+    // compareMode='absolute'，所以这里**总**能拿到值；真拿到 undefined
+    // 时兜底成 absolute，避免「相对判据」开关初始状态不确定。
+    compareMode: condition.compareMode ?? 'absolute',
+    baselineType: condition.baselineType,
+    baselineCount: condition.baselineCount,
   }
 }
 
@@ -732,6 +795,16 @@ export function buildPolicyPayload(
     // §0.6 R-JSON-2：永远提交数组（后端把 null/[] 都落库为 NULL）
     notificationTemplateIds: [...values.notificationTemplateIds],
     conditionTemplateId: values.conditionTemplateId ?? 0,
+    // v1.1 无数据检测：只在 policyType=5 时提交。
+    // ⚠️ 非静默策略**必须整个省略**这两个键，不能提交 null/0 ——
+    //    契约 §1.2.1 规定非静默策略恒为 null，提交了会得到
+    //    「只有 policyType=5 才能设置 targetType」的 422。
+    ...(values.policyType === ALARM_POLICY_TYPE.SILENCE
+      ? {
+          targetType: values.targetType ?? undefined,
+          targetFreshnessMinutes: values.targetFreshnessMinutes ?? undefined,
+        }
+      : {}),
   }
 
   if (mode === 'create')
