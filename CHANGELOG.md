@@ -614,3 +614,69 @@ VERDICT: PASS
   没有起真实浏览器点真实页面（沙箱无浏览器）。
 
 VERDICT: PASS
+
+---
+
+## [v1.1] 告警判据扩展：相对判据（E 类）+ 无数据检测（F 类）
+
+在 v1.0 的 4 类故障语义（阈值/趋势/聚合/状态）之上，补齐第一性原理分析识别出的
+最后两类：**E 类相对判据**和 **F 类无数据检测**。
+
+### 新增
+
+- **E 类 · 相对判据**：条件新增 `compareMode` / `baselineType` / `baselineCount`。
+  - `compareMode`：`absolute`（v1.0 行为，缺省）/ `relative`
+  - `baselineType`：`period` 环比 / `day` 同比昨日 / `week` 同比上周
+  - `baselineCount`：环比前移周期数，1-60
+  - 采用**正交字段**而非新符号算子（`<<` `>>`）：不可扩展、不可读，
+    且会让 `operator` 的枚举从一个「关系」变成「关系+时间」的混合体
+  - `threshold` 保持 `number`，相对模式下量纲改为**百分比** —— 不破坏 v1.0 契约
+  - 基线为 0 或无数据时**不命中**（避免除零 / 把缺数当零产生天文数字偏离）
+
+- **F 类 · 无数据检测**：`policyType=5` 采集静默。
+  - 策略新增 `targetType`（1-4）/ `targetFreshnessMinutes`（5-10080）
+  - 新增 `alarm_target_heartbeat` 表（采集侧写、告警引擎读）
+  - **不塞进 namespace 映射** —— 采集静默不是指标，没有指标名
+  - `targetType` 与 `objectType` **刻意不合并**：两者语义不同
+    （「监控哪类目标的数据新鲜度」vs「告警哪些对象」），值域相同只是巧合
+
+- 迁移 `2026_10_08_000900_add_relative_and_silence_criteria.php`
+  （**唯一破坏性 schema 变化**：`alarm_policy_condition` 的 4 个指标列放宽为可空）
+- 守卫 `verify-migration-idempotent.mjs`、`verify-schema-consistency.mjs`
+- 文档 `docs/alarm/metrics-v1.1-design.md`（含实施记录）
+
+### 修复
+
+实施过程中通过真实 MySQL + 真实 HTTP 发现并修复（详见设计文档 §6）：
+
+- **迁移不幂等**：`ADD COLUMN` 重跑必然 1060，破坏 S-07 原则
+- **MySQL 不支持 `ADD COLUMN IF NOT EXISTS`** —— 那是 MariaDB 语法（1064）
+- **v1.1 新列零 CHECK 防线**：把 v1.0 的 29-CHECK 兜底在新增字段上整个丢掉
+- **`ck_policy_policy_type` 未扩到 5**：采集静默策略一条也建不出来
+- **CHECK 表达式跨行触发 1064**，报错指向第 2 行 `OR`，看起来像括号不配对
+- **`down()` 撞 MySQL 3959**：CHECK 引用列则列不可删，回滚停在半完成状态
+- **`down()` 关闭外键检查**导致级联删除失效、留下孤儿行
+- **`update()` 闭包漏 `use $silenceTarget`**：每次更新策略都把静默配置写成 NULL
+- **可空列被 `(string)` 强转**：`(string) null === ''`，空串撞 CHECK 且报错指向
+  请求里根本没出现的字段
+- **Presenter `(float) null === 0.0`**：静默条件读回 `threshold: 0`，
+  而 0 对普通条件是合法阈值，两者无法区分
+
+### 明确不做
+
+- 相对判据的**计算**、无数据判定的**执行** —— 属于告警引擎
+- 心跳的**写入** —— 由采集侧负责
+- 浏览器真实页面渲染 —— 当前无浏览器自动化环境
+- 10 个新增指标的 `defaultThreshold` 真实数据校准
+
+### 基线
+
+| 项 | v1.0 | v1.1 |
+| --- | --- | --- |
+| PHPUnit | 260 / 740 | **285 / 835** |
+| HTTP E2E | 60 | **107** |
+| 前后端联调 | 22 | **35** |
+| 前端测试 | 449 | **461**（25 文件） |
+| DB CHECK | 29 | **36** |
+
+前端 lint 0 / vue-tsc 0 / build 成功。运行时校验 15 项通过。
