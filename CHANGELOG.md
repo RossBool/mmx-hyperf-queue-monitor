@@ -680,3 +680,53 @@ VERDICT: PASS
 | DB CHECK | 29 | **36** |
 
 前端 lint 0 / vue-tsc 0 / build 成功。运行时校验 15 项通过。
+
+---
+
+## [v1.2] 真实浏览器渲染验证 + 阈值校准方法论 + CORS 修复
+
+### 修复（真实浏览器发现）
+
+- **🔴 CORS 完全缺失（部署级阻塞）**：前后端一不同源，**所有告警接口全部失败**。
+  浏览器发 OPTIONS 预检 → `AuthMiddleware` 对 OPTIONS 也要求 Bearer → 401 →
+  浏览器拦掉真实请求。
+  - 此前 **285 个单测 + 107 条 curl E2E + 35 条联调 + 461 个 jsdom 前端测试全绿**，
+    因为 curl 和 jsdom **都不执行同源策略**
+  - 新增 `App\Middleware\CorsMiddleware`，**必须排在 `AuthMiddleware` 之前**
+  - 支持 `ALARM_CORS_ORIGINS` 白名单；回显 Origin 而非发 `*`（配合 `Vary: Origin`）
+  - 新增 7 条 CORS 单测
+- 修正 `?:` → 显式判空：`getHeaderLine()` 缺省返回 `''` 而非 `null`
+
+### 新增
+
+- **真实浏览器渲染验证** `scripts/verify-browser-render.mjs`
+  - 真实 Chromium → 生产构建产物 → 真 HTTP → 真 MySQL
+  - 35 条断言：逐页渲染、数据真的上屏、v1.1 表单控件、相对判据联动
+  - 截图落在 `.render-shots/`
+  - 外部 CDN 证书错误按域名归因忽略，**指向本服务的同类错误不忽略**
+- **阈值校准方法论** `docs/alarm/threshold-calibration.md`
+  - 把 38 个 `defaultThreshold` 分为「有硬上限 / 行业惯例 / 容量相关」三类
+  - **发现 4 个指标的默认值结构性失效**：`DiskReadIops` / `DiskWriteIops` /
+    `DiskReadTraffic` / `DiskWriteTraffic`
+    —— 云盘 IOPS 上限从 2600 到 100 万（385 倍），任何全局常量都不成立
+  - 给出推导：容量相关指标只能用 v1.1 的相对判据表达
+- **校准脚本** `scripts/calibrate-thresholds.mjs` + 负对照
+  - P99 × 1.2 推导候选阈值，日内周期性检测，平坦度检测
+  - 负对照推翻过初版的 MAD 离群点判据（周期性数据上 MAD 撑大，任何数据都报「无异常」）
+
+### 明确不做
+
+- **没有修改任何 `defaultThreshold`**。文档里给出的 60000 / 800 同样是拍的，
+  拍完再拍一次只是换个人来猜。正确顺序是先在真实环境用相对判据验证，再回来定红线。
+- **没有声称任何阈值「已用真实数据校准」** —— 我手上没有你的时序数据。
+
+### 基线
+
+| 项 | v1.1 | v1.2 |
+| --- | --- | --- |
+| PHPUnit | 285 / 835 | **292 / 857** |
+| HTTP E2E | 107 | 107 |
+| 前后端联调 | 35 | 35 |
+| **真实浏览器渲染** | — | **35**（新增） |
+| **校准脚本负对照** | — | **7**（新增） |
+| 前端 lint / vue-tsc / test | 0 / 0 / 461 | 0 / 0 / 461 |
