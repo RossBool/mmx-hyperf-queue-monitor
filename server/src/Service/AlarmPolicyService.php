@@ -150,6 +150,8 @@ class AlarmPolicyService
         $objectType = $this->assertObjectType($payload['objectType'] ?? null, $errors);
         $objectBinding = $this->payloadValidator->assertObjectBinding($payload, $objectType, $errors);
         $conditionLogic = $this->assertConditionLogic($payload['conditionLogic'] ?? null, $errors);
+        // v1.1 无数据检测（F 类）：仅 policyType=5 有值
+        $silenceTarget = $this->payloadValidator->assertSilenceTarget($payload, $policyType, $errors);
         $conditions = $this->conditionValidator->validate($payload['conditions'] ?? null, $policyType, $errors);
         $notificationTemplateIds = $this->resolveNotificationTemplateIds($payload['notificationTemplateIds'] ?? null, $errors);
         $conditionTemplateId = $this->assertConditionTemplateId($payload['conditionTemplateId'] ?? null, $policyType, $errors);
@@ -158,7 +160,8 @@ class AlarmPolicyService
 
         $id = Db::transaction(function () use (
             $name, $remark, $monitorType, $policyType, $projectId, $objectType, $objectBinding,
-            $conditionLogic, $conditions, $notificationTemplateIds, $conditionTemplateId, $status, $currentUser
+            $conditionLogic,
+            $silenceTarget, $conditions, $notificationTemplateIds, $conditionTemplateId, $status, $currentUser
         ): int {
             $now = Time::now();
             $row = AlarmPolicy::normalizeJsonForWrite([
@@ -174,6 +177,9 @@ class AlarmPolicyService
                 'object_group_ids' => $objectBinding['object_group_ids'],
                 'object_filters' => $objectBinding['object_filters'],
                 'condition_logic' => $conditionLogic,
+                // v1.1 无数据检测：非采集静默策略恒为 NULL（契约 §2.3）
+                'target_type' => $silenceTarget['target_type'],
+                'target_freshness_minutes' => $silenceTarget['target_freshness_minutes'],
                 'notification_template_ids' => $notificationTemplateIds,
                 'condition_template_id' => $conditionTemplateId,
                 'creator_id' => $currentUser['id'],
@@ -212,12 +218,18 @@ class AlarmPolicyService
         $objectType = $this->assertObjectType($payload['objectType'] ?? null, $errors);
         $objectBinding = $this->payloadValidator->assertObjectBinding($payload, $objectType, $errors);
         $conditionLogic = $this->assertConditionLogic($payload['conditionLogic'] ?? null, $errors);
+        // v1.1 无数据检测（F 类）：仅 policyType=5 有值
+        $silenceTarget = $this->payloadValidator->assertSilenceTarget($payload, $policyType, $errors);
         $conditions = $this->conditionValidator->validate($payload['conditions'] ?? null, $policyType, $errors);
         $notificationTemplateIds = $this->resolveNotificationTemplateIds($payload['notificationTemplateIds'] ?? null, $errors);
         $conditionTemplateId = $this->assertConditionTemplateId($payload['conditionTemplateId'] ?? null, $policyType, $errors);
         $errors->validate();
 
-        Db::transaction(function () use ($policy, $name, $remark, $monitorType, $policyType, $projectId, $objectType, $objectBinding, $conditionLogic, $conditions, $notificationTemplateIds, $conditionTemplateId): void {
+        // ⚠️ $silenceTarget 必须在 use 列表里。闭包不会自动捕获外层变量 ——
+        //    漏掉的后果不是报错，而是**每次更新策略都把静默配置写成 NULL**：
+        //    静默策略一旦被编辑（改个名字、改个阈值），targetType / freshness 就没了，
+        //    而且没有任何错误提示。PHP 只在日志里留一条 warning。
+        Db::transaction(function () use ($policy, $name, $remark, $monitorType, $policyType, $projectId, $objectType, $objectBinding, $conditionLogic, $conditions, $notificationTemplateIds, $conditionTemplateId, $silenceTarget): void {
             AlarmPolicyCondition::query()->where('policy_id', $policy->id)->delete();
 
             $row = AlarmPolicy::normalizeJsonForWrite([
@@ -234,6 +246,9 @@ class AlarmPolicyService
                 'object_group_ids' => $objectBinding['object_group_ids'],
                 'object_filters' => $objectBinding['object_filters'],
                 'condition_logic' => $conditionLogic,
+                // v1.1 无数据检测：非采集静默策略恒为 NULL（契约 §2.3）
+                'target_type' => $silenceTarget['target_type'],
+                'target_freshness_minutes' => $silenceTarget['target_freshness_minutes'],
                 'notification_template_ids' => $notificationTemplateIds,
                 'condition_template_id' => $conditionTemplateId,
                 'updated_at' => Time::now(),
@@ -342,6 +357,13 @@ class AlarmPolicyService
                     'continuity' => $condition->continuity,
                     'level' => $condition->level,
                     'frequency' => $condition->frequency,
+                    // v1.1：相对判据设置**原样继承**。
+                    // ⚠️ 用 `?? 'absolute'` 而不是 `?? null` ——
+                    //    副本的 compare_mode 若是 NULL，读取侧会归一化成 absolute，
+                    //    行为一致；但写成 'absolute' 让列语义在库里就自解释。
+                    'compare_mode' => $condition->compare_mode ?? 'absolute',
+                    'baseline_type' => $condition->baseline_type,
+                    'baseline_count' => $condition->baseline_count,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ];
@@ -544,6 +566,19 @@ class AlarmPolicyService
      * ⚠️ 截断按**字符**而非字节：VARCHAR(128) 与 ck_policy_name_len 的 CHAR_LENGTH 都按字符计。
      *    后缀 ` - 副本` = 5 字符，带序号的 ` - 副本(2)` = 8 字符。
      */
+    /**
+     * 可空字符串列的落库值：**null 就保持 null**。
+     *
+     * PHP 的 `(string) null === ''`。对可空列用强转，等于往库里塞空串 ——
+     * 读回来前端拿到 `''` 而不是 `null`，`=== null` 判断直接失效；
+     * 若该列有 CHECK 枚举，空串还会被 DB 拒绝，报错信息指向一个看起来
+     * 完全无辜的字段。
+     */
+    private static function nullableString(mixed $value): ?string
+    {
+        return $value === null ? null : (string) $value;
+    }
+
     private function generateCopyName(string $sourceName): string
     {
         foreach (self::copyNameCandidates($sourceName) as $candidate) {
@@ -685,16 +720,27 @@ class AlarmPolicyService
             $rows[] = [
                 'policy_id' => $policyId,
                 'sort' => (int) $condition['sort'],
-                'metric_namespace' => (string) $condition['metricNamespace'],
-                'metric_name' => (string) $condition['metricName'],
+                // ⚠️ 这 4 列在 v1.1 起**可空**（采集静默条件不含指标判据），
+                //    所以不能用 `(string)` 强转 —— PHP 会把 null 变成 `''`，
+                //    写进去一个「看着有值、其实是空串」的行：
+                //      · 违反 ck_condition_compare_mode（'' 不在枚举里）
+                //      · 违反 ck_condition_operator
+                //      · 语义上也错了：契约要求恒为 NULL，不是空串
+                'metric_namespace' => self::nullableString($condition['metricNamespace']),
+                'metric_name' => self::nullableString($condition['metricName']),
                 'metric_name_cn' => (string) $condition['metricNameCn'],
                 'unit' => (string) $condition['unit'],
-                'operator' => (string) $condition['operator'],
+                'operator' => self::nullableString($condition['operator']),
                 'threshold' => $condition['threshold'],
                 'period' => (int) $condition['period'],
                 'continuity' => (int) $condition['continuity'],
                 'level' => (int) $condition['level'],
                 'frequency' => (int) $condition['frequency'],
+                // v1.1 相对判据：absolute 模式下这两列写 NULL（契约 §1.5.1）
+                // 同一个 (string) null → '' 的坑，静默条件下 compareMode 就是 null
+                'compare_mode' => self::nullableString($condition['compareMode']),
+                'baseline_type' => $condition['baselineType'],
+                'baseline_count' => $condition['baselineCount'],
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
