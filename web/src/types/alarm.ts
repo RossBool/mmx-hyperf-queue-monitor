@@ -115,6 +115,15 @@ export const ALARM_POLICY_TYPE = {
   CVM: 2,
   CLB: 3,
   MYSQL: 4,
+  /**
+   * 采集静默（契约 §1.2，v1.1 新增的 F 类）。
+   *
+   * 它**不使用任何指标** —— 判据是「目标的数据多久没上报」。
+   * 与 objectType 刻意不合并：后者是「告警哪些对象」，这个是「监控什么类型的目标
+   * 的数据新鲜度」。两者取值域恰好相同纯属巧合，合并会让「CVM 实例」
+   * 在两个语境下含义漂移。
+   */
+  SILENCE: 5,
 } as const
 
 export type AlarmPolicyType = (typeof ALARM_POLICY_TYPE)[keyof typeof ALARM_POLICY_TYPE]
@@ -124,6 +133,7 @@ export const ALARM_POLICY_TYPE_LABEL: Record<AlarmPolicyType, string> = {
   [ALARM_POLICY_TYPE.CVM]: '云服务器 CVM',
   [ALARM_POLICY_TYPE.CLB]: '负载均衡 CLB',
   [ALARM_POLICY_TYPE.MYSQL]: '云数据库 MySQL',
+  [ALARM_POLICY_TYPE.SILENCE]: '采集静默',
 }
 
 /**
@@ -137,6 +147,9 @@ export const ALARM_MONITOR_TYPE_POLICY_TYPES: Record<AlarmMonitorType, AlarmPoli
     ALARM_POLICY_TYPE.CVM,
     ALARM_POLICY_TYPE.CLB,
     ALARM_POLICY_TYPE.MYSQL,
+    // v1.1：采集静默归属云产品监控。不加的话前端新建向导里这一项无从归类，
+    // 选了会走到「该监控类型暂无可用策略类型」的死胡同（同 S-14）。
+    ALARM_POLICY_TYPE.SILENCE,
   ],
   [ALARM_MONITOR_TYPE.APM]: [ALARM_POLICY_TYPE.GENERIC_WEB],
   [ALARM_MONITOR_TYPE.RUM]: [],
@@ -464,7 +477,34 @@ export interface AlarmPolicyCondition extends AlarmConditionDerived {
   level: AlarmLevel
   /** 该条件的重复通知频率。 */
   frequency: AlarmFrequency
+
+  // ── v1.1 相对判据（契约 §1.5.1-1.5.3）─────────────────────────
+  /**
+   * 判据模式。
+   * - `absolute`：当前值 vs `threshold` —— **v1.0 唯一支持的行为，也是缺省值**
+   * - `relative`：当前值相对基线的**偏离百分比** vs `threshold`
+   *
+   * ⚠️ `relative` 模式下 `threshold` 的量纲是**百分比**，不是指标原单位。
+   * 例：`compareMode: 'relative', operator: '<', threshold: 30` = 「相对基线跌超 30%」。
+   *
+   * ⚠️ 相对判据的**计算**属于告警引擎，不在本项目范围内；
+   *    本项目负责契约、校验、存储、透传。
+   */
+  compareMode?: AlarmCompareMode
+  /** 基线类型。仅 `compareMode: 'relative'` 时必填，其余必须为 `undefined`。 */
+  baselineType?: AlarmBaselineType
+  /** 环比前移的周期数，1-60。仅 `baselineType: 'period'` 时必填。 */
+  baselineCount?: number
 }
+
+/** 静默检测的目标类型（契约 §1.2.1）。仅 policyType=5 时有值。 */
+export type AlarmSilenceTargetType = 1 | 2 | 3 | 4
+
+/** 判据模式（契约 §1.5.1）。缺省 = `absolute`。 */
+export type AlarmCompareMode = 'absolute' | 'relative'
+
+/** 基线类型（契约 §1.5.2）。仅 `compareMode: 'relative'` 时有值。 */
+export type AlarmBaselineType = 'period' | 'day' | 'week'
 
 /** 条件在策略内的排序位（P5：1..N 连续升序，N <= 4）。 */
 export type AlarmConditionSort = 1 | 2 | 3 | 4
@@ -572,6 +612,20 @@ export interface AlarmPolicyDetail extends AlarmPolicyListItem {
   /** 条件间逻辑 */
   conditionLogic: AlarmConditionLogic
   /** 通知模板摘要，最多 3 个，**不含接收人明细 */
+
+  // ── v1.1 无数据检测（契约 §2.3）───────────────────────────────
+  /**
+   * 静默检测的目标类型。仅 `policyType === 5`（采集静默）时有值，否则 `null`。
+   *
+   * ⚠️ **不返回 `0`**（契约 §0.6 R-JSON-1）。「0 表示不设置」是只有后端自己懂的约定，
+   * 第二个消费方（比如告警引擎）一出现就会变成 bug 温床。
+   */
+  targetType?: AlarmSilenceTargetType | null
+  /**
+   * 数据静默超过该分钟数即告警（5-10080 = 5 分钟 ~ 7 天）。
+   * 仅 `policyType === 5` 时有值，否则 `null`。
+   */
+  targetFreshnessMinutes?: number | null
   notificationTemplates: AlarmPolicyNotificationTemplateBrief[]
 }
 
@@ -867,6 +921,16 @@ export interface AlarmPolicyCreatePayload {
   conditionTemplateId?: number
   /** `1` 表示创建即启用，默认 `0`。**PUT 时省略表示保持原值**（P18）。 */
   status?: AlarmPolicyStatus
+
+  // ── v1.1 无数据检测（契约 §1.2.1）────────────────────────────────
+  // ⚠️ 仅 `policyType === 5`（采集静默）时**允许**提供，且**必须提供**。
+  //    非静默策略提交这两个字段会拿到
+  //    「只有 policyType=5 才能设置 targetType」的 422 ——
+  //    而界面上根本没有这两个输入框，排查会被带偏。
+  /** 静默检测的目标类型，`1 <= n <= 4`。仅 `policyType=5` 时提供。 */
+  targetType?: AlarmSilenceTargetType
+  /** 数据静默超过该分钟数即告警，`5 <= n <= 10080`。仅 `policyType=5` 时提供。 */
+  targetFreshnessMinutes?: number
 }
 
 /** ⑥ `POST /api/alarm/policies/{id}/status` 请求体。**幂等**，重复设置相同值返回成功（P19）。 */
