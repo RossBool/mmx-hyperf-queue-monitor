@@ -186,6 +186,28 @@ export interface IResponse<T, E = Record<string, any>> {
 | `2` | 云服务器 CVM | `CVM` | `1` | `CVM` |
 | `3` | 负载均衡 CLB | `CLB` | `1` | `CLB` |
 | `4` | 云数据库 MySQL | `MYSQL` | `1` | `MYSQL` |
+| `5` | **采集静默** | `SILENCE` | `1` | **无**（见 1.2.1） |
+
+> ⚠️ **`5` 是 v1.1 新增的 F 类策略类型**，它**不使用任何指标**。
+> 判据是「目标的数据多久没上报」，与「指标值是否越界」正交。
+> 因此 `conditions` 固定长度为 1，且该条不含 `metricNamespace` / `metricName` /
+> `threshold` / `operator` / `compareMode` 等任何指标判据字段；
+> 实际阈值由策略级的 `targetFreshnessMinutes` 承载（见 2.3）。
+
+#### 1.2.1 `targetType` 静默检测目标类型
+
+仅 `policyType=5` 时有值，其余策略恒为 `null`（**不返回 `0`**，见 §0.6 R-JSON-1）。
+
+| value | label | 心跳表 `alarm_target_heartbeat.target_type` |
+| --- | --- | --- |
+| `1` | CVM 实例 | `1` |
+| `2` | CLB 实例 | `2` |
+| `3` | MySQL 实例 | `3` |
+| `4` | WEB 服务 | `4` |
+
+> ⚠️ 与 `objectType` **刻意不合并**：`objectType` 描述「告警哪些对象」，
+> `targetType` 描述「监控什么类型的目标的数据新鲜度」。两者取值域恰好相同纯属巧合，
+> 合并会让「CVM 实例」在两个语境下含义漂移。
 
 ### 1.3 `level` 告警等级
 
@@ -219,6 +241,52 @@ export interface IResponse<T, E = Record<string, any>> {
 | `!=` | 不等于 |
 
 DB 存储 `VARCHAR(2)`，**必须原样传输，不做本地化转换**（不要传「大于」）。
+
+#### 1.5.1 `compareMode` 判据模式（v1.1 新增）
+
+| value | label | 含义 |
+| --- | --- | --- |
+| `absolute` | 绝对阈值 | 当前值 `operator` `threshold`（**v1.0 唯一支持的行为**） |
+| `relative` | 相对基线偏离 | 当前值相对基线的偏离百分比 `operator` `threshold` |
+
+**缺省即 `absolute`**。存量策略的该字段为 `NULL`，服务端按 `absolute` 处理。
+请求体**省略该字段**与显式传 `"absolute"` 等价。
+
+#### 1.5.2 `baselineType` 基线类型（v1.1 新增，仅 `relative` 时必填）
+
+| value | label | 基线定义 |
+| --- | --- | --- |
+| `period` | 环比 | 第 `baselineCount + 1` 个 `period` 窗口的均值 |
+| `day` | 同比昨日 | 昨日同一时刻起、一个 `period` 长度的均值 |
+| `week` | 同比上周 | 上周同一时刻起、一个 `period` 长度的均值 |
+
+#### 1.5.3 `baselineCount` 环比前移周期数（v1.1 新增，仅 `baselineType=period` 时必填）
+
+整数，`1 <= n <= 60`。`n=1` 表示「与前一个周期比」。
+
+#### 1.5.4 相对判据的求值与边界（必须逐条实现）
+
+```
+absolute : 命中 ⟺ value OP threshold
+
+relative : baseline = 按 baselineType 取参考窗口均值
+           deviation = (value - baseline) / baseline × 100%
+           命中 ⟺ deviation OP threshold
+```
+
+⚠️ **两条极易实现错的边界，实现方必须显式处理**：
+
+| 情况 | 判定 | 理由 |
+| --- | --- | --- |
+| `baseline == 0` | **不命中** | 除以 0 无意义。此场景应改用 `absolute` |
+| 基线窗口无数据 | **不命中** | 宁可漏报，也不要用「0 当基线」算出天文数字偏离 |
+| `baseline < 0` | 用 `abs(value - baseline) / abs(baseline) × 100%` | 直接除会在负基数下**符号翻转**，语义反了 |
+
+**`relative` 模式下 `threshold` 的量纲是百分比，不是指标原单位。**
+例如 `compareMode=relative, operator=<, threshold=30` 表示「相对基线跌超 30%」。
+
+> 判定逻辑属于**告警引擎**，引擎不在本项目范围内。
+> 本项目负责：契约、校验、存储、透传。详见 `docs/alarm/metrics-v1.1-design.md`。
 
 ### 1.6 `frequency` 告警频次 / 重复通知（分钟）
 
@@ -323,6 +391,15 @@ DB 列名 `frequency`（`SMALLINT UNSIGNED`）。重复通知规则：告警产�
 | `continuity` | int | 持续周期（数据点数），`1 <= continuity <= 10`，必填 |
 | `level` | int | 该条件命中后的告警等级，见 1.3，必填 |
 | `frequency` | int | 该条件的重复通知频率，见 1.6，必填 |
+| `compareMode` | string | 判据模式，见 1.5.1。**可省略**，省略 = `absolute`。`policyType=5` 时**必须省略** |
+| `baselineType` | string | 基线类型，见 1.5.2。仅 `compareMode=relative` 时必填，其余必须为 `null` |
+| `baselineCount` | int | 环比前移周期数，见 1.5.3。仅 `baselineType=period` 时必填，其余必须为 `null` |
+
+> **v1.1 校验规则**（实现方必须逐条落地）：
+> 1. `compareMode=relative` 时 `baselineType` **必填**；`absolute` 时两者必须缺省或为 `null`。
+> 2. `baselineType=period` 时 `baselineCount` **必填**且 `1 <= n <= 60`；`day`/`week` 时必须为 `null`。
+> 3. `policyType=5`（采集静默）时，本对象的上述 6 个指标判据字段**全部必须缺省**。
+> 4. 响应中 `compareMode` 恒有值（`null` 归一化为 `"absolute"`），`baselineType` / `baselineCount` 在 absolute 模式下恒为 `null`。
 
 > **字典字段回填规则**：`metricNameCn` / `unit` 属于派生数据，**永远由服务端从指标字典回填**。前端可以选择带上（便于表单回显），后端忽略请求值。
 >
@@ -459,6 +536,9 @@ DB 列名 `frequency`（`SMALLINT UNSIGNED`）。重复通知规则：告警产�
 | `description` | string | 指标说明 |
 
 内容**唯一来源：`metrics.md` §1**（共 **38** 个指标）。`GET /api/alarm/metrics` 由该文档驱动实现，
+
+| `targetType` | int \| null | 仅 `policyType=5` 时有值，见 1.2.1，否则 `null`（**不返回 `0`**） |
+| `targetFreshnessMinutes` | int \| null | 数据静默超过该分钟数即告警，`5 <= n <= 10080`。仅 `policyType=5` 时有值，否则 `null` |
 > 本契约不重复列举指标，避免两处漂移。
 
 ---
