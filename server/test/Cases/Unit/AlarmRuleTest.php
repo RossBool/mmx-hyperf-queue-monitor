@@ -9,6 +9,7 @@ use App\Constants\ErrorCode;
 use App\Exception\BusinessException;
 use App\Service\Metric\MetricDictionary;
 use App\Service\Validator\ChannelValidator;
+use App\Service\AlarmPolicyService;
 use App\Service\Validator\ConditionValidator;
 use App\Support\Text;
 use App\Support\Validator;
@@ -741,12 +742,302 @@ class AlarmRuleTest extends TestCase
 
     public function testMonitorTypePolicyTypeMapping(): void
     {
-        $this->assertSame([2, 3, 4], AlarmEnum::MONITOR_TYPE_POLICY_TYPES[1]);
+        // v1.1：采集静默（5）挂到云产品监控（1）下 —— 不加的话前端新建向导里
+        // 选不到它，而选了就走到「暂无可用策略类型」的死胡同（同 S-14）。
+        $this->assertSame([2, 3, 4, 5], AlarmEnum::MONITOR_TYPE_POLICY_TYPES[1]);
         $this->assertSame([1], AlarmEnum::MONITOR_TYPE_POLICY_TYPES[2]);
-        // 3/4/5 在 v1.0 暂无策略类型
+        // monitorType 3/4/5 在 v1.0/v1.1 仍无策略类型（不可选）
         $this->assertSame([], AlarmEnum::MONITOR_TYPE_POLICY_TYPES[3]);
         $this->assertSame([], AlarmEnum::MONITOR_TYPE_POLICY_TYPES[4]);
         $this->assertSame([], AlarmEnum::MONITOR_TYPE_POLICY_TYPES[5]);
+    }
+
+    // ------------------------------------------------------------ v1.1 相对判据（契约 §1.5）
+
+    public function testCompareModeAndBaselineTypeEnums(): void
+    {
+        $this->assertSame(['absolute' => '绝对阈值', 'relative' => '相对基线偏离'], AlarmEnum::COMPARE_MODE);
+        $this->assertSame(['period' => '环比', 'day' => '同比昨日', 'week' => '同比上周'], AlarmEnum::BASELINE_TYPE);
+        // ⚠️ compareMode 只有两个值且**默认值是 absolute**：
+        // 若把 relative 设成默认，所有存量策略会在没人改过配置的情况下改变判据语义。
+        $this->assertArrayHasKey('absolute', AlarmEnum::COMPARE_MODE);
+        // 采集静默**不在** namespace 映射里：它不使用任何指标
+        $this->assertArrayNotHasKey(5, AlarmEnum::POLICY_TYPE_NAMESPACE);
+    }
+
+    /**
+     * 相对判据校验的完整矩阵。
+     *
+     * 覆盖 4 条契约规则（§2.1 v1.1 校验规则）+ 边界：
+     *   ① relative 必须给 baselineType
+     *   ② period 必须给 baselineCount（1-60）；day/week 必须不给
+     *   ③ absolute 时两者必须缺省
+     *   ④ 非法值要报在**正确的字段路径**上
+     */
+    #[DataProvider('relativeCriteriaProvider')]
+    public function testRelativeCriteriaValidation(array $override, array $expectFields, array $expectAbsent = []): void
+    {
+        $errors = new Validator();
+        $result = $this->conditions()->validate(
+            [array_merge($this->validCondition(), $override)],
+            2,
+            $errors
+        );
+
+        $actual = array_keys($errors->errors());
+        sort($actual);
+        sort($expectFields);
+        $this->assertSame($expectFields, $actual, 'errors: ' . json_encode($errors->errors(), JSON_UNESCAPED_UNICODE));
+
+        // 没有错误时，返回结构必须带上归一化后的三字段
+        if ($expectFields === []) {
+            $this->assertArrayHasKey('compareMode', $result[0]);
+            $this->assertArrayHasKey('baselineType', $result[0]);
+            $this->assertArrayHasKey('baselineCount', $result[0]);
+        }
+    }
+
+    public static function relativeCriteriaProvider(): array
+    {
+        return [
+            // 缺省：不传任何字段 = absolute，且两个 baseline 字段被清成 null
+            '缺省即 absolute' => [
+                [], [], ['conditions.0.baselineType', 'conditions.0.baselineCount'],
+            ],
+            '显式 absolute' => [
+                ['compareMode' => 'absolute'], [], ['conditions.0.baselineType', 'conditions.0.baselineCount'],
+            ],
+            // 空串按「没传」处理：HTML 表单提交空值就是空串
+            '空串 compareMode 等同缺省' => [
+                ['compareMode' => ''], [], ['conditions.0.baselineType', 'conditions.0.baselineCount'],
+            ],
+            // 环比
+            'relative + 环比' => [
+                ['compareMode' => 'relative', 'baselineType' => 'period', 'baselineCount' => 1], [],
+            ],
+            'relative + 环比 上限' => [
+                ['compareMode' => 'relative', 'baselineType' => 'period', 'baselineCount' => 60], [],
+            ],
+            // 同比
+            'relative + 同比昨日' => [
+                ['compareMode' => 'relative', 'baselineType' => 'day'], [],
+            ],
+            'relative + 同比上周' => [
+                ['compareMode' => 'relative', 'baselineType' => 'week'], [],
+            ],
+            // 错误分支
+            'relative 缺 baselineType' => [
+                ['compareMode' => 'relative'], ['conditions.0.baselineType'],
+            ],
+            '非法 baselineType' => [
+                ['compareMode' => 'relative', 'baselineType' => 'month'], ['conditions.0.baselineType'],
+            ],
+            '非法 compareMode' => [
+                ['compareMode' => 'nonsense'], ['conditions.0.compareMode'],
+            ],
+            '环比缺 baselineCount' => [
+                ['compareMode' => 'relative', 'baselineType' => 'period'], ['conditions.0.baselineCount'],
+            ],
+            '环比 baselineCount 越界' => [
+                ['compareMode' => 'relative', 'baselineType' => 'period', 'baselineCount' => 61],
+                ['conditions.0.baselineCount'],
+            ],
+            '环比 baselineCount 为 0' => [
+                ['compareMode' => 'relative', 'baselineType' => 'period', 'baselineCount' => 0],
+                ['conditions.0.baselineCount'],
+            ],
+            // 矛盾组合：宁可过度拒绝，也不在库里留下自相矛盾的行
+            'absolute 却带 baselineType' => [
+                ['compareMode' => 'absolute', 'baselineType' => 'day'], ['conditions.0.baselineType'],
+            ],
+            'absolute 却带 baselineCount' => [
+                ['compareMode' => 'absolute', 'baselineCount' => 3], ['conditions.0.baselineCount'],
+            ],
+            '同比却带 baselineCount' => [
+                ['compareMode' => 'relative', 'baselineType' => 'day', 'baselineCount' => 2],
+                ['conditions.0.baselineCount'],
+            ],
+        ];
+    }
+
+    /**
+     * 归一化必须真的发生，而不只是「没报错」。
+     *
+     * 「absolute 却带着 baselineType」这种行一旦落库，没有任何地方会再报错，
+     * 只会在半年后有人排查「为什么这条策略不触发」时变成灵异事件。
+     */
+    public function testAbsoluteModeNormalizesBaselineFieldsToNull(): void
+    {
+        $errors = new Validator();
+        // 注意：矛盾组合（absolute + baselineType）**有错**，而 validate() 有错时返回 []，
+        // 所以归一化只能在**有效路径**上验 —— 这也是它真正会落库的那条路径。
+        $result = $this->conditions()->validate(
+            [array_merge($this->validCondition(), ['compareMode' => 'absolute'])],
+            2,
+            $errors
+        );
+
+        $this->assertTrue($errors->passes(), json_encode($errors->errors(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('absolute', $result[0]['compareMode']);
+        $this->assertNull($result[0]['baselineType'], 'absolute 模式下 baselineType 必须归一化成 null');
+        $this->assertNull($result[0]['baselineCount'], 'absolute 模式下 baselineCount 必须归一化成 null');
+    }
+
+    /**
+     * 相对判据落库前的归一化。
+     *
+     * 「relative 却带着不该有的字段」这种行一旦落库，没有任何地方会再报错，
+     * 只会在半年后有人排查「为什么这条策略不触发」时变成灵异事件。
+     * 这里钉死返回结构，确保脏值不会顺着 Service 走到 INSERT。
+     */
+    /**
+     * 采集静默条件（policyType=5）。
+     *
+     * ⚠️ 这组用例是**真 bug 的回归测试**，不是补覆盖率。
+     *    第一版 ConditionValidator 让 policyType=5 走通用分支，而
+     *    `POLICY_TYPE_NAMESPACE[5]` 刻意不存在，于是
+     *    `belongsToPolicyType()` 恒 false → 每条条件都报「不属于该策略类型」
+     *    → **采集静默策略一条也建不出来**。
+     *    HTTP 端到端才发现：Service 层测试全用的是 policyType=2。
+     */
+    public function testSilenceConditionAcceptsNoMetricFields(): void
+    {
+        $errors = new Validator();
+        $result = $this->conditions()->validate(
+            [['sort' => 1, 'period' => 5, 'continuity' => 1, 'level' => 2, 'frequency' => 15]],
+            5,
+            $errors
+        );
+
+        $this->assertTrue($errors->passes(), json_encode($errors->errors(), JSON_UNESCAPED_UNICODE));
+        $this->assertCount(1, $result);
+        // 6 个指标判据字段必须归一化成 null —— 不是 ''、不是 0
+        foreach (['metricNamespace', 'metricName', 'operator', 'threshold',
+                  'compareMode', 'baselineType', 'baselineCount'] as $field) {
+            $this->assertNull($result[0][$field], "静默条件的 {$field} 必须是 null，实际=" . var_export($result[0][$field], true));
+        }
+        // 告警属性保留
+        $this->assertSame(2, $result[0]['level']);
+        $this->assertSame(15, $result[0]['frequency']);
+    }
+
+    /** 静默条件里**给了**指标字段必须报错，不能静默忽略 */
+    public function testSilenceConditionRejectsMetricFields(): void
+    {
+        $cases = [
+            'metricNamespace' => 'CVM',
+            'metricName' => 'CpuUtilizationRate',
+            'operator' => '>',
+            'threshold' => 80,
+            'compareMode' => 'relative',
+            'baselineType' => 'period',
+            'baselineCount' => 2,
+        ];
+        foreach ($cases as $field => $value) {
+            $errors = new Validator();
+            $this->conditions()->validate(
+                [array_merge(['sort' => 1, 'period' => 5, 'continuity' => 1, 'level' => 2, 'frequency' => 15], [$field => $value])],
+                5,
+                $errors
+            );
+            $this->assertFalse(
+                $errors->passes(),
+                "静默条件给了 {$field} 竟然通过了 —— 静默忽略会让用户以为配置生效了"
+            );
+            $this->assertArrayHasKey("conditions.0.{$field}", $errors->errors());
+        }
+    }
+
+    /** 空串 / null / 空数组按「没传」处理：HTML 表单提交空输入框就是空串 */
+    public function testSilenceConditionTreatsEmptyValuesAsAbsent(): void
+    {
+        $errors = new Validator();
+        $result = $this->conditions()->validate(
+            [[
+                'sort' => 1, 'period' => 5, 'continuity' => 1, 'level' => 2, 'frequency' => 15,
+                'metricNamespace' => '', 'metricName' => null, 'threshold' => '',
+                'compareMode' => '', 'baselineType' => null, 'baselineCount' => null,
+            ]],
+            5,
+            $errors
+        );
+        $this->assertTrue($errors->passes(), json_encode($errors->errors(), JSON_UNESCAPED_UNICODE));
+        $this->assertNull($result[0]['metricNamespace']);
+    }
+
+    /** 静默条件的 5 个必填字段一个都不能少 */
+    public function testSilenceConditionStillRequiresAlertAttributes(): void
+    {
+        foreach (['sort', 'period', 'continuity', 'level', 'frequency'] as $field) {
+            $cond = ['sort' => 1, 'period' => 5, 'continuity' => 1, 'level' => 2, 'frequency' => 15];
+            unset($cond[$field]);
+            $errors = new Validator();
+            $this->conditions()->validate([$cond], 5, $errors);
+            $this->assertFalse($errors->passes(), "静默条件缺 {$field} 竟然通过了");
+            $this->assertArrayHasKey("conditions.0.{$field}", $errors->errors());
+        }
+    }
+
+    /** policyType≠5 时不能走静默分支：给普通条件加 targetType 应由策略级校验拦 */
+    public function testNonSilencePolicyTypeUnaffectedBySilenceBranch(): void
+    {
+        $errors = new Validator();
+        $result = $this->conditions()->validate([$this->validCondition()], 2, $errors);
+        $this->assertTrue($errors->passes(), json_encode($errors->errors(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('CVM', $result[0]['metricNamespace']);
+        // ⚠️ 不断言 PHP 类型：threshold 在校验层就是 float，接口层的 number 由
+        //    Model 的 'threshold' => 'float' cast 保证。在这里写 assertSame(80, ...)
+        //    是在断言一个与被测行为无关的实现细节 —— 之前就这么栽过一次。
+        $this->assertEquals(80, $result[0]['threshold']);
+    }
+
+    /**
+     * 落库映射回归：可空列**不能**被 `(string)` 强转。
+     *
+     * ⚠️ 这是真 bug 的回归测试。`ArmPolicyService` 原来写的是
+     *    `'compare_mode' => (string) $condition['compareMode']`，
+     *    而 PHP 的 `(string) null === ''` —— 静默条件的 compareMode 归一化成 null，
+     *    于是往库里写了个空串，直接撞上 ck_condition_compare_mode。
+     *
+     * 表现是「采集静默策略一条也建不出来」，但报错信息指向 compare_mode，
+     *    而 compare_mode 根本没出现在请求里 —— 排查方向会被完全带偏。
+     */
+    public function testNullableStringKeepsNull(): void
+    {
+        $method = new \ReflectionMethod(AlarmPolicyService::class, 'nullableString');
+        $method->setAccessible(true);
+
+        $this->assertNull($method->invoke(null, null), 'null 必须保持 null，不能变成空串');
+        $this->assertSame('', $method->invoke(null, ''), '空串仍然是空串');
+        $this->assertSame('relative', $method->invoke(null, 'relative'));
+        $this->assertSame('0', $method->invoke(null, 0), '0 是有效值，不能被当成 falsy 变 null');
+        $this->assertSame('5', $method->invoke(null, 5));
+    }
+
+    public function testRelativeModeResultShape(): void
+    {
+        $errors = new Validator();
+        $result = $this->conditions()->validate(
+            [array_merge($this->validCondition(), [
+                'compareMode' => 'relative', 'baselineType' => 'period', 'baselineCount' => 3,
+            ])],
+            2,
+            $errors
+        );
+
+        $this->assertTrue($errors->passes(), json_encode($errors->errors(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame('relative', $result[0]['compareMode']);
+        $this->assertSame('period', $result[0]['baselineType']);
+        $this->assertSame(3, $result[0]['baselineCount']);
+        // 11 个原有字段（sort + metricNamespace/metricName/metricNameCn/unit
+        // + operator/threshold/period/continuity/level/frequency）+ 3 个 v1.1 字段 = 14。
+        // ⚠️ 这里数的是**键的个数**，少一个就说明某个字段在重构中掉了 ——
+        //    而「少一个字段」在真机上表现为 undefined，前端不报错、只是数据丢失。
+        $this->assertCount(
+            14,
+            $result[0],
+            '条件应有 11 个原有字段 + 3 个 v1.1 字段，实际: ' . implode(',', array_keys($result[0]))
+        );
     }
 
     public function testPolicyTypeNamespaceMapping(): void
