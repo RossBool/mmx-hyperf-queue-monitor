@@ -18,18 +18,51 @@ final class AlarmEnum
      * 3/4/5 在 v1.0 暂无策略类型（选了返回 422）。
      */
     public const MONITOR_TYPE_POLICY_TYPES = [
-        1 => [2, 3, 4],
+        // v1.1：policyType=5「采集静默」挂在云产品监控（1）下。
+        // 它不使用任何指标，但仍然要有归属的 monitorType，
+        // 否则前端新建向导里「采集静默」这一项无从归类。
+        1 => [2, 3, 4, 5],
         2 => [1],
         3 => [],
         4 => [],
         5 => [],
     ];
 
-    /** §1.2 policyType：1 通用 Web 2 CVM 3 CLB 4 MySQL */
-    public const POLICY_TYPE = [1 => '通用 Web 服务', 2 => '云服务器 CVM', 3 => '负载均衡 CLB', 4 => '云数据库 MySQL'];
+    /** §1.2 policyType：1 通用 Web 2 CVM 3 CLB 4 MySQL 5 采集静默（v1.1） */
+    public const POLICY_TYPE = [1 => '通用 Web 服务', 2 => '云服务器 CVM', 3 => '负载均衡 CLB', 4 => '云数据库 MySQL', 5 => '采集静默'];
 
-    /** §1.2 / metrics.md §0.2：policyType -> 唯一 namespace */
+    /**
+     * §1.2 / metrics.md §0.2：policyType -> 唯一 namespace。
+     *
+     * ⚠️ `policyType=5`（采集静默）**故意不在这个映射里** ——
+     *    它不使用任何指标，没有 namespace 可映射。
+     *    刻意留空而不是给个占位值：占位值会让「取不到 namespace」
+     *    和「取到了但值不对」两种情况混在一起，排查时很难受。
+     */
     public const POLICY_TYPE_NAMESPACE = [1 => 'WEB', 2 => 'CVM', 3 => 'CLB', 4 => 'MYSQL'];
+
+    /** §1.2.1 targetType：静默检测的目标类型，仅 policyType=5 有值 */
+    public const TARGET_TYPE = [1 => 'CVM 实例', 2 => 'CLB 实例', 3 => 'MySQL 实例', 4 => 'WEB 服务'];
+
+    /**
+     * §1.5.1 compareMode：判据模式。缺省 = absolute（v1.0 行为）。
+     *
+     * 为什么用「absolute 是默认值」而不是「新模式是默认值」：
+     * 存量条件的该列是 NULL，若把 relative 设成默认，
+     * 所有老策略会在没有任何人改过配置的情况下改变判据语义。
+     */
+    public const COMPARE_MODE = ['absolute' => '绝对阈值', 'relative' => '相对基线偏离'];
+
+    /** §1.5.2 baselineType：基线类型，仅 compareMode=relative 时有值 */
+    public const BASELINE_TYPE = ['period' => '环比', 'day' => '同比昨日', 'week' => '同比上周'];
+
+    /** §1.5.3 baselineCount 取值范围（仅 baselineType=period） */
+    public const BASELINE_COUNT_MIN = 1;
+    public const BASELINE_COUNT_MAX = 60;
+
+    /** §2.3 targetFreshnessMinutes 取值范围（5 分钟 ~ 7 天） */
+    public const FRESHNESS_MIN_MINUTES = 5;
+    public const FRESHNESS_MAX_MINUTES = 10080;
 
     /** §1.3 level：1 紧急 2 严重 3 提示（数值越小越严重） */
     public const LEVEL = [1 => '紧急', 2 => '严重', 3 => '提示'];
