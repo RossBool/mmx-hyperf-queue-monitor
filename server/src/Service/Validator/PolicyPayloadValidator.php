@@ -23,6 +23,9 @@ use App\Support\Validator;
  */
 class PolicyPayloadValidator
 {
+    /** 契约 §1.2 policyType=5「采集静默」 */
+    public const POLICY_TYPE_SILENCE = 5;
+
     /**
      * P12 / P13 / N9：通知模板 id 列表。
      *
@@ -134,6 +137,59 @@ class PolicyPayloadValidator
      * @param array<string, mixed> $payload
      * @return array{object_ids: ?array, object_group_ids: ?array, object_filters: ?array}
      */
+    /**
+     * v1.1 无数据检测（F 类）字段校验 —— 契约 §1.2.1 / §2.3。
+     *
+     * 与 `assertObjectBinding` 同样的思路：**双向校验**。
+     * 既要求 policyType=5 时必须给，也要求非 5 时必须不给 ——
+     * 只做前者的话，policyType=2 的策略里会残留一段没人读的 targetType 数据，
+     * 半年后有人看到就开始猜「这个值到底起没起作用」。
+     *
+     * @return array{target_type: ?int, target_freshness_minutes: ?int}
+     */
+    public function assertSilenceTarget(array $payload, int $policyType, Validator $errors): array
+    {
+        $rawType = $payload['targetType'] ?? null;
+        $rawMinutes = $payload['targetFreshnessMinutes'] ?? null;
+        $type = ($rawType === null || $rawType === '') ? null : (int) $rawType;
+        $minutes = ($rawMinutes === null || $rawMinutes === '') ? null : (int) $rawMinutes;
+
+        if ($policyType !== self::POLICY_TYPE_SILENCE) {
+            if ($type !== null) {
+                $errors->add('targetType', '只有 policyType=5（采集静默）才能设置 targetType');
+            }
+            if ($minutes !== null) {
+                $errors->add('targetFreshnessMinutes', '只有 policyType=5（采集静默）才能设置 targetFreshnessMinutes');
+            }
+            return ['target_type' => null, 'target_freshness_minutes' => null];
+        }
+
+        if ($type === null) {
+            $errors->add('targetType', '采集静默策略必须指定监控目标类型');
+        } elseif (! isset(\App\Constants\AlarmEnum::TARGET_TYPE[$type])) {
+            $errors->add('targetType', '监控目标类型必须是 1/2/3/4 之一');
+        }
+
+        if ($minutes === null) {
+            $errors->add('targetFreshnessMinutes', '采集静默策略必须指定静默时长（分钟）');
+        } elseif ($minutes < \App\Constants\AlarmEnum::FRESHNESS_MIN_MINUTES
+            || $minutes > \App\Constants\AlarmEnum::FRESHNESS_MAX_MINUTES) {
+            $errors->add(
+                'targetFreshnessMinutes',
+                sprintf(
+                    '静默时长必须是 %d-%d 分钟的整数',
+                    \App\Constants\AlarmEnum::FRESHNESS_MIN_MINUTES,
+                    \App\Constants\AlarmEnum::FRESHNESS_MAX_MINUTES
+                )
+            );
+        }
+
+        return [
+            'target_type' => isset(\App\Constants\AlarmEnum::TARGET_TYPE[$type ?? 0]) ? $type : null,
+            'target_freshness_minutes' => $minutes,
+        ];
+    }
+
     public function assertObjectBinding(array $payload, int $objectType, Validator $errors): array
     {
         $objectIds = self::intListOrNull($payload['objectIds'] ?? null);
