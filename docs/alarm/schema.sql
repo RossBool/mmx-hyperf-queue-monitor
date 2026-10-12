@@ -329,6 +329,10 @@ CREATE TABLE `alarm_history` (
   `notify_count`      SMALLINT UNSIGNED NOT NULL DEFAULT 0      COMMENT '已通知次数（重复推送计数）',
   `created_at`        DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
   `updated_at`        DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  -- 活动告警唯一键（生成列，v1.3）。见 docs/alarm/alert-lifecycle.md §5。
+  -- ⚠️ MySQL 不支持 `UNIQUE ... WHERE`，所以「只约束未恢复的行」靠 NULL 语义实现：
+  --    UNIQUE 索引允许多个 NULL 共存 → 恢复后 active_key 为 NULL，不参与唯一性检查。
+  `active_key`        VARCHAR(96)       GENERATED ALWAYS AS (IF(`recovered_at` IS NULL, CONCAT(`policy_id`, ':', `condition_id`, ':', `object_id`), NULL)) STORED COMMENT '活动告警唯一键；已恢复为 NULL 故不参与唯一约束',
 
   PRIMARY KEY (`id`),
   -- 核心查询索引：按策略查历史 + 时间倒序（策略详情页"告警历史"）
@@ -341,6 +345,9 @@ CREATE TABLE `alarm_history` (
   KEY `idx_history_triggered_id` (`triggered_at`, `id`),
   -- 冗余索引：未来按对象/指标反查
   KEY `idx_history_object` (`object_id`),
+  -- 活动告警唯一约束（v1.3）：同 (policy_id, condition_id, object_id) 未恢复时只能有一行。
+  -- 数据库兜底「一次命中 = 一条告警」，防并发下重复行。
+  UNIQUE KEY `uk_history_active` (`active_key`),
 
   CONSTRAINT `ck_history_level`     CHECK (`level` IN (1, 2, 3)),
   CONSTRAINT `ck_history_status`    CHECK (`status` IN (1, 2, 3, 4)),
