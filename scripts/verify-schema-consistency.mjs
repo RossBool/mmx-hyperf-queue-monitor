@@ -130,6 +130,36 @@ try {
   console.log('  ⚠ 跳过真实库 CHECK 数量校验（MySQL 不可用）')
 }
 
+// ── ⑧ 活动告警唯一约束（v1.3）────────────────────────────────────
+//
+// 为什么这条必须钉死：它是「一次命中 = 一条告警」这个不变量的**唯一**数据库兜底。
+// 丢了它，并发下会静默产生重复行 —— 而重复行不会报错，只会让告警列表没法看。
+const migActive = '/workspace/server/migrations/2026_10_12_001000_add_alarm_history_active_key.php'
+const migActiveSrc = fs.existsSync(migActive) ? fs.readFileSync(migActive, 'utf8') : ''
+
+const historyStart = sql.indexOf('CREATE TABLE `alarm_history`')
+const historyEnd = sql.indexOf('PRIMARY KEY (`id`)', historyStart)
+const historyBody = historyStart >= 0 ? sql.slice(historyStart, historyEnd) : ''
+
+check(/`active_key`\s+VARCHAR\(\d+\)\s+GENERATED ALWAYS AS/.test(historyBody),
+  'alarm_history.active_key 是生成列（非普通列）',
+  'alarm_history.active_key 必须是 GENERATED ALWAYS AS —— 普通列会与应用层状态不一致')
+check(historyBody.indexOf('`recovered_at`') < historyBody.indexOf('`active_key`'),
+  'active_key 声明在 recovered_at 之后（生成列必须晚于源列）',
+  'active_key 必须声明在 recovered_at 之后，否则 MySQL 报 1054 Unknown column in generated column function')
+check(/UNIQUE KEY `uk_history_active` \(`active_key`\)/.test(sql),
+  'schema.sql 有 uk_history_active 唯一索引',
+  'schema.sql 缺少 uk_history_active —— 活动告警唯一性没有数据库兜底')
+check(migActiveSrc.includes('uk_history_active') && migActiveSrc.includes('active_key'),
+  '迁移里有 active_key + uk_history_active',
+  '迁移里缺少 uk_history_active —— 只改 schema.sql 不改迁移，重建即回归')
+check(migActiveSrc.includes('HAVING c > 1') || migActiveSrc.includes('HAVING'),
+  '迁移在加唯一索引前会清理历史重复行',
+  '迁移加唯一索引前必须先清理重复活跃行，否则 ALTER 直接失败')
+check(migActiveSrc.indexOf('HAVING') < migActiveSrc.indexOf('ADD UNIQUE KEY'),
+  '清理重复行在 ADD UNIQUE KEY 之前',
+  '⚠️ 顺序反了：先加唯一索引会在有脏数据时直接失败，且留下半完成状态')
+
 console.log(`  通过 ${ok.length} 项`)
 if (liveCount !== null) console.log(`  真实 MySQL 生效 CHECK: ${liveCount} 个`)
 
